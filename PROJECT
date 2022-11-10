@@ -1,0 +1,17 @@
+domain: k8s.appscode.com
+layout:
+- go.kubebuilder.io/v3
+multigroup: true
+projectName: sidekick
+repo: kubeops.dev/sidekick
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: k8s.appscode.com
+  group: apps
+  kind: Sidekick
+  path: kubeops.dev/sidekick/apis/apps/v1alpha1
+  version: v1alpha1
+version: "3"

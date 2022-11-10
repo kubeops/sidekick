@@ -1,0 +1,12 @@
+apiVersion: apps.k8s.appscode.com/v1alpha1
+kind: Sidekick
+metadata:
+  labels:
+    app.kubernetes.io/name: sidekick
+    app.kubernetes.io/instance: sidekick-sample
+    app.kubernetes.io/part-of: sidekick
+    app.kuberentes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: sidekick
+  name: sidekick-sample
+spec:
+  # TODO(user): Add fields here
