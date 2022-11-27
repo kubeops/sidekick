@@ -1,0 +1,21 @@
+apiVersion: apps.k8s.appscode.com/v1alpha1
+kind: Sidekick
+metadata:
+  name: web-sidekick
+spec:
+  leader:
+    # name: web-0
+    selectionPolicy: First
+    selector:
+      matchLabels:
+        app: nginx
+  containers:
+  - image: busybox
+    name: sidekick
+    command:
+      - sleep
+      - "3600"
+    volumeMounts:
+    - name: www
+      # mountPath: /cache
+  restartPolicy: Always

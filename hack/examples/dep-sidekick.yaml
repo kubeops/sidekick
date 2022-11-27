@@ -1,0 +1,19 @@
+apiVersion: apps.k8s.appscode.com/v1alpha1
+kind: Sidekick
+metadata:
+  name: busy-sidekick
+spec:
+  leader:
+    selector:
+      matchLabels:
+        app: busy-dep
+  containers:
+  - image: busybox
+    name: sidekick
+    command:
+      - sleep
+      - "3600"
+    volumeMounts:
+    - name: cache-volume
+      # mountPath: /cache
+  restartPolicy: Always
