@@ -8,7 +8,7 @@ spec:
   resources:
     requests:
       storage: 1Gi
-  storageClassName: linode-block-storage-retain
+  # storageClassName: linode-block-storage-retain
   volumeMode: Filesystem
 ---
 apiVersion: apps/v1
@@ -37,12 +37,6 @@ spec:
         volumeMounts:
         - mountPath: /cache
           name: cache-volume
-      - image: ubuntu:18.04
-        command:
-          - sleep
-          - "3600"
-        imagePullPolicy: IfNotPresent
-        name: ubuntu
       restartPolicy: Always
       volumes:
       - name: cache-volume
