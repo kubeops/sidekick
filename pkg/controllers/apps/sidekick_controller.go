@@ -148,7 +148,7 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			OwnerReferences: []metav1.OwnerReference{*o1, *o2},
 		},
 		Spec: corev1.PodSpec{
-			Volumes:                       leader.Spec.Volumes, // leader
+			Volumes:                       listVolumes(leader, sidekick), // leader
 			InitContainers:                make([]corev1.Container, 0, len(sidekick.Spec.InitContainers)),
 			Containers:                    make([]corev1.Container, 0, len(sidekick.Spec.Containers)),
 			EphemeralContainers:           sidekick.Spec.EphemeralContainers,
@@ -284,6 +284,20 @@ func findMount(leader *corev1.Pod, name string) *corev1.VolumeMount {
 			if vm.Name == name {
 				return &vm
 			}
+		}
+	}
+	return nil
+}
+
+func listVolumes(leader *corev1.Pod, sidekick appsv1alpha1.Sidekick) []corev1.Volume {
+	for _, c := range sidekick.Spec.Containers {
+		if len(c.VolumeMounts) > 0 {
+			return leader.Spec.Volumes
+		}
+	}
+	for _, c := range sidekick.Spec.InitContainers {
+		if len(c.VolumeMounts) > 0 {
+			return leader.Spec.Volumes
 		}
 	}
 	return nil
