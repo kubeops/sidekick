@@ -320,7 +320,7 @@ func (r *SidekickReconciler) getLeader(ctx context.Context, sidekick appsv1alpha
 		return &leader, nil
 	}
 
-	var leaders corev1.PodList
+	var candidates corev1.PodList
 	opts := []client.ListOption{client.InNamespace(sidekick.Namespace)}
 	if sidekick.Spec.Leader.Selector != nil {
 		sel, err := metav1.LabelSelectorAsSelector(sidekick.Spec.Leader.Selector)
@@ -329,30 +329,37 @@ func (r *SidekickReconciler) getLeader(ctx context.Context, sidekick appsv1alpha
 		}
 		opts = append(opts, client.MatchingLabelsSelector{Selector: sel})
 	}
-	if err := r.List(ctx, &leaders, opts...); err != nil {
+	if err := r.List(ctx, &candidates, opts...); err != nil {
 		return nil, err
 	}
 
-	if len(leaders.Items) == 0 {
-		return nil, errors.NewNotFound(schema.GroupResource{Resource: "pods"}, "")
-	} else if len(leaders.Items) == 1 {
-		return &leaders.Items[0], nil
+	leaders := make([]corev1.Pod, 0, len(candidates.Items))
+	for _, pod := range candidates.Items {
+		if pod.Status.Phase == corev1.PodRunning {
+			leaders = append(leaders, pod)
+		}
 	}
 
-	sort.Slice(leaders.Items, func(i, j int) bool {
-		oi := re.FindStringSubmatch(leaders.Items[i].Name)
-		oj := re.FindStringSubmatch(leaders.Items[j].Name)
+	if len(leaders) == 0 {
+		return nil, errors.NewNotFound(schema.GroupResource{Resource: "pods"}, "")
+	} else if len(leaders) == 1 {
+		return &leaders[0], nil
+	}
+
+	sort.Slice(leaders, func(i, j int) bool {
+		oi := re.FindStringSubmatch(leaders[i].Name)
+		oj := re.FindStringSubmatch(leaders[j].Name)
 		if oi != nil && oj != nil {
 			pi, _ := strconv.Atoi(oi[1])
 			pj, _ := strconv.Atoi(oj[1])
 			return pi < pj
 		}
-		return leaders.Items[i].Name < leaders.Items[j].Name
+		return leaders[i].Name < leaders[j].Name
 	})
 	if sidekick.Spec.Leader.SelectionPolicy == appsv1alpha1.PodSelectionPolicyFirst {
-		return &leaders.Items[0], nil
+		return &leaders[0], nil
 	}
-	return &leaders.Items[len(leaders.Items)-1], nil
+	return &leaders[len(leaders)-1], nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
