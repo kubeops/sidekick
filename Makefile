@@ -422,6 +422,7 @@ endif
 install:
 	@cd ../installer; \
 	helm upgrade -i sidekick charts/sidekick --wait \
+	    --set registryFQDN="" \
 		--namespace=$(KUBE_NAMESPACE) --create-namespace \
 		--set image.registry=$(REGISTRY) \
 		--set image.tag=$(TAG_PROD) \
