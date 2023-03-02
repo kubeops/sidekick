@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"time"
 
 	appsv1alpha1 "kubeops.dev/sidekick/apis/apps/v1alpha1"
 
@@ -31,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/klog/v2"
 	"k8s.io/utils/pointer"
 	cu "kmodules.xyz/client-go/client"
 	core_util "kmodules.xyz/client-go/core/v1"
@@ -47,8 +49,9 @@ import (
 )
 
 const (
-	keyHash   = "sidekick.appscode.com/hash"
-	keyLeader = "sidekick.appscode.com/leader"
+	keyHash              = "sidekick.appscode.com/hash"
+	keyLeader            = "sidekick.appscode.com/leader"
+	SidekickPhaseCurrent = "Current"
 )
 
 // SidekickReconciler reconciles a Sidekick object
@@ -71,6 +74,7 @@ type SidekickReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.13.0/pkg/reconcile
 func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	klog.Infoln(fmt.Sprintf("reconciling %v ", req.NamespacedName))
 	logger := log.FromContext(ctx, "sidekick", req.Name, "ns", req.Namespace)
 	ctx = log.IntoContext(ctx, logger)
 
@@ -106,25 +110,33 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		var pod corev1.Pod
 		e2 := r.Get(ctx, req.NamespacedName, &pod)
 		if e2 == nil {
-			r.Delete(ctx, &pod) // TODO
+			err := r.Delete(ctx, &pod)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
 
 			sidekick.Status.Leader.Name = ""
 			sidekick.Status.Pod = ""
-			sidekick.Status.Phase = "Current"
+			sidekick.Status.Phase = SidekickPhaseCurrent
 			sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
-			r.Status().Update(ctx, &sidekick) // TODO
-			return ctrl.Result{}, nil         // client.IgnoreNotFound(err)
+			err = r.Status().Update(ctx, &sidekick)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
 		} else if err != nil {
-			return ctrl.Result{}, client.IgnoreNotFound(err)
+			return ctrl.Result{
+				Requeue:      true,
+				RequeueAfter: time.Second * 10,
+			}, client.IgnoreNotFound(err)
 		}
 	} else if err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-
 	var pod corev1.Pod
 	e2 := r.Get(ctx, req.NamespacedName, &pod)
 	if e2 != nil && !errors.IsNotFound(e2) {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		return ctrl.Result{}, client.IgnoreNotFound(e2)
 	}
 	if e2 == nil {
 		expectedHash := meta.GenerationHash(&sidekick)
@@ -132,22 +144,31 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if expectedHash != actualHash ||
 			leader.Name != pod.Annotations[keyLeader] ||
 			leader.Spec.NodeName != pod.Spec.NodeName {
-			r.Delete(ctx, &pod) // TODO
+			err := r.Delete(ctx, &pod)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
 
 			sidekick.Status.Leader.Name = ""
 			sidekick.Status.Pod = ""
-			sidekick.Status.Phase = "Current"
+			sidekick.Status.Phase = SidekickPhaseCurrent
 			sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
-			r.Status().Update(ctx, &sidekick) // TODO
-			return ctrl.Result{}, nil         // client.IgnoreNotFound(err)
+			err = r.Status().Update(ctx, &sidekick)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
 		}
 
 		// sidekick.Status.Leader.Name = ""
 		sidekick.Status.Pod = pod.Status.Phase
-		sidekick.Status.Phase = "Current"
+		sidekick.Status.Phase = SidekickPhaseCurrent
 		sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
-		r.Status().Update(ctx, &sidekick) // TODO
-		return ctrl.Result{}, nil         // client.IgnoreNotFound(err)
+		err := r.Status().Update(ctx, &sidekick)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
 	} else if !errors.IsNotFound(e2) {
 		return ctrl.Result{}, e2
 	}
@@ -236,10 +257,13 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	sidekick.Status.Leader.Name = leader.Name
 	sidekick.Status.Pod = pod.Status.Phase
-	sidekick.Status.Phase = "Current"
+	sidekick.Status.Phase = SidekickPhaseCurrent
 	sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
-	r.Status().Update(ctx, &sidekick) // TODO
-	return ctrl.Result{}, nil         // client.IgnoreNotFound(err)
+	err = r.Status().Update(ctx, &sidekick)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
 }
 
 func convContainer(leader *corev1.Pod, c appsv1alpha1.Container) (*corev1.Container, error) {
@@ -268,7 +292,7 @@ func convContainer(leader *corev1.Pod, c appsv1alpha1.Container) (*corev1.Contai
 		TTY:                      c.TTY,
 	}
 	for _, vm := range c.VolumeMounts {
-		empty := vm.ReadOnly == false &&
+		empty := !vm.ReadOnly &&
 			vm.MountPath == "" &&
 			vm.SubPath == "" &&
 			vm.MountPropagation == nil &&
