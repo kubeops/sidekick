@@ -202,7 +202,7 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		pod.Spec.Containers = append(pod.Spec.InitContainers, *c2)
+		pod.Spec.InitContainers = append(pod.Spec.InitContainers, *c2)
 	}
 
 	e3 := r.Create(ctx, &pod)
