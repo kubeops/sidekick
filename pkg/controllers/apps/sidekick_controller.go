@@ -32,6 +32,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/pointer"
+	cu "kmodules.xyz/client-go/client"
+	core_util "kmodules.xyz/client-go/core/v1"
 	"kmodules.xyz/client-go/meta"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -79,6 +81,24 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// requeue (we'll need to wait for a new notification), and we can get them
 		// on deleted requests.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	if sidekick.DeletionTimestamp != nil {
+		if core_util.HasFinalizer(sidekick.ObjectMeta, appsv1alpha1.SchemeGroupVersion.Group) {
+			return ctrl.Result{}, r.terminate(ctx, &sidekick)
+		}
+	}
+
+	_, _, err := cu.CreateOrPatch(context.TODO(), r.Client, &sidekick,
+		func(in client.Object, createOp bool) client.Object {
+			sk := in.(*appsv1alpha1.Sidekick)
+			sk.ObjectMeta = core_util.AddFinalizer(sk.ObjectMeta, appsv1alpha1.SchemeGroupVersion.Group)
+
+			return sk
+		},
+	)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 
 	leader, err := r.getLeader(ctx, sidekick)
@@ -186,6 +206,10 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			OS:                           sidekick.Spec.OS,
 			HostUsers:                    sidekick.Spec.HostUsers,
 		},
+	}
+
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
 	}
 	pod.Annotations[keyHash] = meta.GenerationHash(&sidekick)
 	pod.Annotations[keyLeader] = leader.Name
@@ -387,4 +411,26 @@ func (r *SidekickReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			controller.Options{MaxConcurrentReconciles: 5},
 		).
 		Complete(r)
+}
+
+func (r *SidekickReconciler) terminate(ctx context.Context, sidekick *appsv1alpha1.Sidekick) error {
+	err := r.Delete(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      sidekick.Name,
+			Namespace: sidekick.Namespace,
+		},
+	})
+	if err != nil && !errors.IsNotFound(err) {
+		return err
+	}
+
+	_, _, err = cu.CreateOrPatch(context.TODO(), r.Client, sidekick,
+		func(in client.Object, createOp bool) client.Object {
+			sk := in.(*appsv1alpha1.Sidekick)
+			sk.ObjectMeta = core_util.RemoveFinalizer(sk.ObjectMeta, appsv1alpha1.SchemeGroupVersion.Group)
+
+			return sk
+		},
+	)
+	return err
 }
