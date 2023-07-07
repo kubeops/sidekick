@@ -422,6 +422,7 @@ endif
 .PHONY: install
 install:
 	@cd ../installer; \
+	kubectl create ns $(KUBE_NAMESPACE) || true; \
 	kubectl label ns $(KUBE_NAMESPACE) pod-security.kubernetes.io/enforce=restricted; \
 	helm upgrade -i sidekick charts/sidekick --wait \
 		--namespace=$(KUBE_NAMESPACE) --create-namespace \
