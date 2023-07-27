@@ -89,7 +89,7 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
-	_, _, err := cu.CreateOrPatch(context.TODO(), r.Client, &sidekick,
+	_, err := cu.CreateOrPatch(context.TODO(), r.Client, &sidekick,
 		func(in client.Object, createOp bool) client.Object {
 			sk := in.(*appsv1alpha1.Sidekick)
 			sk.ObjectMeta = core_util.AddFinalizer(sk.ObjectMeta, appsv1alpha1.SchemeGroupVersion.Group)
@@ -424,7 +424,7 @@ func (r *SidekickReconciler) terminate(ctx context.Context, sidekick *appsv1alph
 		return err
 	}
 
-	_, _, err = cu.CreateOrPatch(context.TODO(), r.Client, sidekick,
+	_, err = cu.CreateOrPatch(context.TODO(), r.Client, sidekick,
 		func(in client.Object, createOp bool) client.Object {
 			sk := in.(*appsv1alpha1.Sidekick)
 			sk.ObjectMeta = core_util.RemoveFinalizer(sk.ObjectMeta, appsv1alpha1.SchemeGroupVersion.Group)
