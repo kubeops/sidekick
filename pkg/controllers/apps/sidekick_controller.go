@@ -338,14 +338,18 @@ func findMount(leader *corev1.Pod, name string) *corev1.VolumeMount {
 }
 
 func listVolumes(leader *corev1.Pod, sidekick appsv1alpha1.Sidekick) []corev1.Volume {
+	vols := make([]corev1.Volume, 0)
+	vols = core_util.UpsertVolume(vols, sidekick.Spec.Volumes...)
 	for _, c := range sidekick.Spec.Containers {
 		if len(c.VolumeMounts) > 0 {
-			return leader.Spec.Volumes
+			vols = core_util.UpsertVolume(vols, leader.Spec.Volumes...)
+			return vols
 		}
 	}
 	for _, c := range sidekick.Spec.InitContainers {
 		if len(c.VolumeMounts) > 0 {
-			return leader.Spec.Volumes
+			vols = core_util.UpsertVolume(vols, leader.Spec.Volumes...)
+			return vols
 		}
 	}
 	return nil
