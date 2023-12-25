@@ -25,7 +25,7 @@ COMPRESS ?= no
 
 # Produce CRDs that work back to Kubernetes 1.11 (no version conversion)
 CRD_OPTIONS          ?= "crd:crdVersions={v1},allowDangerousTypes=true"
-CODE_GENERATOR_IMAGE ?= ghcr.io/appscode/gengo:release-1.25
+CODE_GENERATOR_IMAGE ?= ghcr.io/appscode/gengo:release-1.29
 API_GROUPS           ?= apps:v1alpha1
 
 # Where to push the docker image.
@@ -149,7 +149,6 @@ version:
 .PHONY: clientset
 clientset:
 	@docker run --rm                                            \
-		-u $$(id -u):$$(id -g)                                    \
 		-v /tmp:/.cache                                           \
 		-v $$(pwd):$(DOCKER_REPO_ROOT)                            \
 		-w $(DOCKER_REPO_ROOT)                                    \

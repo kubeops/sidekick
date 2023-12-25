@@ -36,6 +36,7 @@ import (
 	"kmodules.xyz/client-go/tools/clusterid"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
 var (
@@ -64,7 +65,7 @@ func NewCmdRun() *cobra.Command {
 		Run: func(cmd *cobra.Command, args []string) {
 			klog.Infof("Starting binary version %s+%s ...", v.Version.Version, v.Version.CommitHash)
 
-			ctrl.SetLogger(klogr.New())
+			ctrl.SetLogger(klogr.New()) // nolint:staticcheck
 
 			cfg := ctrl.GetConfigOrDie()
 			cfg.QPS = QPS
@@ -72,8 +73,7 @@ func NewCmdRun() *cobra.Command {
 
 			mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 				Scheme:                 scheme,
-				MetricsBindAddress:     metricsAddr,
-				Port:                   9443,
+				Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 				HealthProbeBindAddress: probeAddr,
 				LeaderElection:         enableLeaderElection,
 				LeaderElectionID:       "74b1e3a7.k8s.appscode.com",
