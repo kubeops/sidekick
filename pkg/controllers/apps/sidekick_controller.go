@@ -33,7 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	cu "kmodules.xyz/client-go/client"
 	core_util "kmodules.xyz/client-go/core/v1"
 	"kmodules.xyz/client-go/meta"
@@ -45,7 +45,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
 const (
@@ -177,8 +176,8 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	o1 := metav1.NewControllerRef(&sidekick, appsv1alpha1.SchemeGroupVersion.WithKind("Sidekick"))
 	o2 := metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))
-	o2.Controller = pointer.Bool(false)
-	o2.BlockOwnerDeletion = pointer.Bool(false)
+	o2.Controller = ptr.To(false)
+	o2.BlockOwnerDeletion = ptr.To(false)
 
 	pod = corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -416,9 +415,9 @@ func (r *SidekickReconciler) getLeader(ctx context.Context, sidekick appsv1alpha
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SidekickReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	leaderHandler := handler.EnqueueRequestsFromMapFunc(func(a client.Object) []reconcile.Request {
+	leaderHandler := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
 		sidekicks := &appsv1alpha1.SidekickList{}
-		if err := r.List(context.Background(), sidekicks, client.InNamespace(a.GetNamespace())); err != nil {
+		if err := r.List(ctx, sidekicks, client.InNamespace(a.GetNamespace())); err != nil {
 			return nil
 		}
 		var req []reconcile.Request
@@ -434,7 +433,7 @@ func (r *SidekickReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			return !meta.MustAlreadyReconciled(o)
 		}))).
 		Owns(&corev1.Pod{}).
-		Watches(&source.Kind{Type: &corev1.Pod{}}, leaderHandler).
+		Watches(&corev1.Pod{}, leaderHandler).
 		WithOptions(
 			controller.Options{MaxConcurrentReconciles: 5},
 		).
