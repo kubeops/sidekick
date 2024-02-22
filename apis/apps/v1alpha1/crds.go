@@ -22,6 +22,6 @@ import (
 	"kmodules.xyz/client-go/apiextensions"
 )
 
-func (d *Sidekick) CustomResourceDefinition() *apiextensions.CustomResourceDefinition {
+func (_ Sidekick) CustomResourceDefinition() *apiextensions.CustomResourceDefinition {
 	return crds.MustCustomResourceDefinition(SchemeGroupVersion.WithResource(ResourceSidekicks))
 }
