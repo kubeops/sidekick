@@ -30,10 +30,9 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	"k8s.io/klog/v2"
-	"k8s.io/klog/v2/klogr"
+	clustermeta "kmodules.xyz/client-go/cluster"
 	"kmodules.xyz/client-go/meta"
 	_ "kmodules.xyz/client-go/meta"
-	"kmodules.xyz/client-go/tools/clusterid"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -65,7 +64,7 @@ func NewCmdRun() *cobra.Command {
 		Run: func(cmd *cobra.Command, args []string) {
 			klog.Infof("Starting binary version %s+%s ...", v.Version.Version, v.Version.CommitHash)
 
-			ctrl.SetLogger(klogr.New()) // nolint:staticcheck
+			ctrl.SetLogger(klog.NewKlogr())
 
 			cfg := ctrl.GetConfigOrDie()
 			cfg.QPS = QPS
@@ -121,7 +120,7 @@ func NewCmdRun() *cobra.Command {
 	}
 
 	meta.AddLabelBlacklistFlag(cmd.Flags())
-	clusterid.AddFlags(cmd.Flags())
+	clustermeta.AddFlags(cmd.Flags())
 	cmd.Flags().Float32Var(&QPS, "qps", QPS, "The maximum QPS to the master from this client")
 	cmd.Flags().IntVar(&Burst, "burst", Burst, "The maximum burst for throttle")
 	cmd.Flags().StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
