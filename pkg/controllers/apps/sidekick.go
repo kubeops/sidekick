@@ -99,14 +99,15 @@ func (r *SidekickReconciler) calculateSidekickPhase(ctx context.Context, sidekic
 
 	if err == nil {
 		restartCounter := getContainerRestartCounts(&pod)
-		podSpecificHash := pod.Annotations[podHash]
-		sidekick.Status.ContainerRestartCountsPerPod[podSpecificHash] = restartCounter
+		podUID := string(pod.GetUID())
+
+		sidekick.Status.ContainerRestartCountsPerPod[podUID] = restartCounter
 		if pod.Status.Phase == corev1.PodFailed && pod.ObjectMeta.DeletionTimestamp == nil {
-			sidekick.Status.FailureCount[podSpecificHash] = true
+			sidekick.Status.FailureCount[podUID] = true
 			// case: restartPolicy OnFailure and backOffLimit crosses when last time pod restarts,
 			// in that situation we need to fail the pod, but this manual failure shouldn't take into account
 			if sidekick.Spec.RestartPolicy != corev1.RestartPolicyNever && getTotalBackOffCounts(sidekick) > *sidekick.Spec.BackoffLimit {
-				sidekick.Status.FailureCount[podSpecificHash] = false
+				sidekick.Status.FailureCount[podUID] = false
 			}
 		}
 

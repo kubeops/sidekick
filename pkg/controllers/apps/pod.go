@@ -30,6 +30,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const (
+	deletionInitiatorKey                = "sidekick.appscode.com/deletion-initiator"
+	deletionInitiatesBySidekickOperator = "sidekick-operator"
+)
+
 func (r *SidekickReconciler) removePodFinalizerIfMarkedForDeletion(ctx context.Context, req ctrl.Request) (bool, error) {
 	var pod corev1.Pod
 	err := r.Get(ctx, req.NamespacedName, &pod)
@@ -43,7 +48,6 @@ func (r *SidekickReconciler) removePodFinalizerIfMarkedForDeletion(ctx context.C
 		// deletionInitiatorKey set in its annotations
 
 		_, exists := pod.ObjectMeta.Annotations[deletionInitiatorKey]
-		hash, exists1 := pod.ObjectMeta.Annotations[podHash]
 		if !exists {
 			var sk appsv1alpha1.Sidekick
 			err = r.Get(ctx, req.NamespacedName, &sk)
@@ -53,11 +57,11 @@ func (r *SidekickReconciler) removePodFinalizerIfMarkedForDeletion(ctx context.C
 			// if sidekick is not found or it is in deletion state,
 			// ignore updating failureCount in this case
 
-			if err == nil && sk.DeletionTimestamp == nil && exists1 {
+			if err == nil && sk.DeletionTimestamp == nil {
 				if sk.Status.FailureCount == nil {
 					sk.Status.FailureCount = make(map[string]bool)
 				}
-				sk.Status.FailureCount[hash] = true
+				sk.Status.FailureCount[string(pod.GetUID())] = true
 				err = r.updateSidekickStatus(ctx, &sk)
 				if err != nil && !errors.IsNotFound(err) {
 					return false, err

@@ -18,8 +18,6 @@ package apps
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"regexp"
 	"sort"
@@ -50,17 +48,9 @@ import (
 )
 
 const (
-	keyHash                             = "sidekick.appscode.com/hash"
-	keyLeader                           = "sidekick.appscode.com/leader"
-	podHash                             = "sidekick.appscode.com/pod-specific-hash"
-	finalizerSuffix                     = "finalizer"
-	deletionInitiatorKey                = "sidekick.appscode.com/deletion-initiator"
-	deletionInitiatesBySidekickOperator = "sidekick-operator"
+	keyHash   = "sidekick.appscode.com/hash"
+	keyLeader = "sidekick.appscode.com/leader"
 )
-
-func getFinalizerName() string {
-	return appsv1alpha1.SchemeGroupVersion.Group + "/" + finalizerSuffix
-}
 
 // SidekickReconciler reconciles a Sidekick object
 type SidekickReconciler struct {
@@ -239,11 +229,8 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if pod.Annotations == nil {
 		pod.Annotations = make(map[string]string)
 	}
-	curTime := time.Now().String()
-	curTimeHash := sha256.Sum256([]byte(curTime))
 	// Do not alter the assign order
 	pod.Annotations[keyHash] = meta.GenerationHash(&sidekick)
-	pod.Annotations[podHash] = hex.EncodeToString(curTimeHash[:])[:16]
 	pod.Annotations[keyLeader] = leader.Name
 	for _, c := range sidekick.Spec.Containers {
 		c2, err := convContainer(leader, c)
@@ -480,4 +467,8 @@ func (r *SidekickReconciler) terminate(ctx context.Context, sidekick *appsv1alph
 		},
 	)
 	return err
+}
+
+func getFinalizerName() string {
+	return appsv1alpha1.SchemeGroupVersion.Group + "/finalizer"
 }
