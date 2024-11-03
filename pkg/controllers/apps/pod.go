@@ -78,31 +78,23 @@ func (r *SidekickReconciler) removePodFinalizerIfMarkedForDeletion(ctx context.C
 	return false, nil
 }
 
+func (r *SidekickReconciler) removePodFinalizer(ctx context.Context, pod *corev1.Pod) error {
+	_, err := cu.CreateOrPatch(ctx, r.Client, pod,
+		func(in client.Object, createOp bool) client.Object {
+			po := in.(*corev1.Pod)
+			po.ObjectMeta = core_util.RemoveFinalizer(po.ObjectMeta, getFinalizerName())
+			return po
+		},
+	)
+	return client.IgnoreNotFound(err)
+}
+
 func (r *SidekickReconciler) deletePod(ctx context.Context, pod *corev1.Pod) error {
 	err := r.setDeletionInitiatorAnnotation(ctx, pod)
 	if err != nil {
 		return err
 	}
 	return r.Delete(ctx, pod)
-}
-
-func getContainerRestartCounts(pod *corev1.Pod) int32 {
-	restartCounter := int32(0)
-	for _, cs := range pod.Status.ContainerStatuses {
-		restartCounter += cs.RestartCount
-	}
-	for _, ics := range pod.Status.InitContainerStatuses {
-		restartCounter += ics.RestartCount
-	}
-	return restartCounter
-}
-
-func getTotalContainerRestartCounts(sidekick *appsv1alpha1.Sidekick) int32 {
-	totalContainerRestartCount := int32(0)
-	for _, value := range sidekick.Status.ContainerRestartCountsPerPod {
-		totalContainerRestartCount += value
-	}
-	return totalContainerRestartCount
 }
 
 func (r *SidekickReconciler) setDeletionInitiatorAnnotation(ctx context.Context, pod *corev1.Pod) error {
@@ -118,13 +110,13 @@ func (r *SidekickReconciler) setDeletionInitiatorAnnotation(ctx context.Context,
 	return err
 }
 
-func (r *SidekickReconciler) removePodFinalizer(ctx context.Context, pod *corev1.Pod) error {
-	_, err := cu.CreateOrPatch(ctx, r.Client, pod,
-		func(in client.Object, createOp bool) client.Object {
-			po := in.(*corev1.Pod)
-			po.ObjectMeta = core_util.RemoveFinalizer(po.ObjectMeta, getFinalizerName())
-			return po
-		},
-	)
-	return client.IgnoreNotFound(err)
+func getContainerRestartCounts(pod *corev1.Pod) int32 {
+	restartCounter := int32(0)
+	for _, cs := range pod.Status.ContainerStatuses {
+		restartCounter += cs.RestartCount
+	}
+	for _, ics := range pod.Status.InitContainerStatuses {
+		restartCounter += ics.RestartCount
+	}
+	return restartCounter
 }

@@ -83,54 +83,6 @@ func (r *SidekickReconciler) updateSidekickPhase(ctx context.Context, req ctrl.R
 	return false, nil
 }
 
-func (r *SidekickReconciler) updateSidekickStatus(ctx context.Context, sidekick *appsv1alpha1.Sidekick) error {
-	_, err := cu.PatchStatus(ctx, r.Client, sidekick, func(obj client.Object) client.Object {
-		sk := obj.(*appsv1alpha1.Sidekick)
-		sk.Status = sidekick.Status
-		return sk
-	})
-	return err
-}
-
-func getFailureCountFromSidekickStatus(sidekick *appsv1alpha1.Sidekick) int32 {
-	failureCount := int32(0)
-	for _, val := range sidekick.Status.FailureCount {
-		if val {
-			failureCount++
-		}
-	}
-	return failureCount
-}
-
-func (r *SidekickReconciler) getSidekickPhase(sidekick *appsv1alpha1.Sidekick, pod *corev1.Pod) appsv1alpha1.SideKickPhase {
-	// if restartPolicy is always, we will always try to keep a pod running
-	// if pod.status.phase == failed, then we will start a new pod
-	// TODO: which of these two should come first?
-	if sidekick.Spec.RestartPolicy == corev1.RestartPolicyAlways {
-		return appsv1alpha1.SideKickPhaseCurrent
-	}
-	if sidekick.Status.Phase == appsv1alpha1.SidekickPhaseSucceeded {
-		return appsv1alpha1.SidekickPhaseSucceeded
-	}
-
-	// now restartPolicy onFailure & Never remaining
-	// In both cases we return phase as succeeded if our
-	// pod return with exit code 0
-	if pod != nil && pod.Status.Phase == corev1.PodSucceeded && pod.ObjectMeta.DeletionTimestamp == nil {
-		return appsv1alpha1.SidekickPhaseSucceeded
-	}
-
-	// Now we will figure if we should update the sidekick phase
-	// as failed or not by checking the backOffLimit
-
-	backOffCounts := getTotalBackOffCounts(sidekick)
-	// TODO: is it > or >= ?
-	if backOffCounts > *sidekick.Spec.BackoffLimit {
-		return appsv1alpha1.SideKickPhaseFailed
-	}
-	return appsv1alpha1.SideKickPhaseCurrent
-}
-
 func (r *SidekickReconciler) calculateSidekickPhase(ctx context.Context, sidekick *appsv1alpha1.Sidekick) (appsv1alpha1.SideKickPhase, error) {
 	if sidekick.Status.ContainerRestartCountsPerPod == nil {
 		sidekick.Status.ContainerRestartCountsPerPod = make(map[string]int32)
@@ -169,6 +121,44 @@ func (r *SidekickReconciler) calculateSidekickPhase(ctx context.Context, sidekic
 	return phase, nil
 }
 
+func (r *SidekickReconciler) getSidekickPhase(sidekick *appsv1alpha1.Sidekick, pod *corev1.Pod) appsv1alpha1.SideKickPhase {
+	// if restartPolicy is always, we will always try to keep a pod running
+	// if pod.status.phase == failed, then we will start a new pod
+	// TODO: which of these two should come first?
+	if sidekick.Spec.RestartPolicy == corev1.RestartPolicyAlways {
+		return appsv1alpha1.SideKickPhaseCurrent
+	}
+	if sidekick.Status.Phase == appsv1alpha1.SidekickPhaseSucceeded {
+		return appsv1alpha1.SidekickPhaseSucceeded
+	}
+
+	// now restartPolicy onFailure & Never remaining
+	// In both cases we return phase as succeeded if our
+	// pod return with exit code 0
+	if pod != nil && pod.Status.Phase == corev1.PodSucceeded && pod.ObjectMeta.DeletionTimestamp == nil {
+		return appsv1alpha1.SidekickPhaseSucceeded
+	}
+
+	// Now we will figure if we should update the sidekick phase
+	// as failed or not by checking the backOffLimit
+
+	backOffCounts := getTotalBackOffCounts(sidekick)
+	// TODO: is it > or >= ?
+	if backOffCounts > *sidekick.Spec.BackoffLimit {
+		return appsv1alpha1.SideKickPhaseFailed
+	}
+	return appsv1alpha1.SideKickPhaseCurrent
+}
+
+func (r *SidekickReconciler) updateSidekickStatus(ctx context.Context, sidekick *appsv1alpha1.Sidekick) error {
+	_, err := cu.PatchStatus(ctx, r.Client, sidekick, func(obj client.Object) client.Object {
+		sk := obj.(*appsv1alpha1.Sidekick)
+		sk.Status = sidekick.Status
+		return sk
+	})
+	return err
+}
+
 func getTotalBackOffCounts(sidekick *appsv1alpha1.Sidekick) int32 {
 	// failureCount keeps track of the total number of pods that had pod.status.phase == failed
 	failureCount := getFailureCountFromSidekickStatus(sidekick)
@@ -181,4 +171,22 @@ func getTotalBackOffCounts(sidekick *appsv1alpha1.Sidekick) int32 {
 	}
 	klog.Infoln(*sidekick.Spec.BackoffLimit, totalContainerRestartCount, failureCount)
 	return failureCount + totalContainerRestartCount
+}
+
+func getFailureCountFromSidekickStatus(sidekick *appsv1alpha1.Sidekick) int32 {
+	failureCount := int32(0)
+	for _, val := range sidekick.Status.FailureCount {
+		if val {
+			failureCount++
+		}
+	}
+	return failureCount
+}
+
+func getTotalContainerRestartCounts(sidekick *appsv1alpha1.Sidekick) int32 {
+	totalContainerRestartCount := int32(0)
+	for _, value := range sidekick.Status.ContainerRestartCountsPerPod {
+		totalContainerRestartCount += value
+	}
+	return totalContainerRestartCount
 }
