@@ -48,9 +48,8 @@ import (
 )
 
 const (
-	keyHash              = "sidekick.appscode.com/hash"
-	keyLeader            = "sidekick.appscode.com/leader"
-	SidekickPhaseCurrent = "Current"
+	keyHash   = "sidekick.appscode.com/hash"
+	keyLeader = "sidekick.appscode.com/leader"
 )
 
 // SidekickReconciler reconciles a Sidekick object
@@ -77,6 +76,14 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	logger := log.FromContext(ctx, "sidekick", req.Name, "ns", req.Namespace)
 	ctx = log.IntoContext(ctx, logger)
 
+	isPodFinalizerRemoved, err := r.removePodFinalizerIfMarkedForDeletion(ctx, req)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if isPodFinalizerRemoved {
+		return ctrl.Result{}, nil
+	}
+
 	var sidekick appsv1alpha1.Sidekick
 	if err := r.Get(ctx, req.NamespacedName, &sidekick); err != nil {
 		logger.Error(err, "unable to fetch Sidekick")
@@ -86,39 +93,33 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if sidekick.DeletionTimestamp != nil {
-		if core_util.HasFinalizer(sidekick.ObjectMeta, appsv1alpha1.SchemeGroupVersion.Group) {
-			return ctrl.Result{}, r.terminate(ctx, &sidekick)
-		}
-	}
-
-	_, err := cu.CreateOrPatch(context.TODO(), r.Client, &sidekick,
-		func(in client.Object, createOp bool) client.Object {
-			sk := in.(*appsv1alpha1.Sidekick)
-			sk.ObjectMeta = core_util.AddFinalizer(sk.ObjectMeta, appsv1alpha1.SchemeGroupVersion.Group)
-
-			return sk
-		},
-	)
+	err = r.handleSidekickFinalizer(ctx, &sidekick)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
+	dropKey, err := r.updateSidekickPhase(ctx, req, &sidekick)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if dropKey {
+		return ctrl.Result{}, nil
+	}
+
 	leader, err := r.getLeader(ctx, sidekick)
+
 	if errors.IsNotFound(err) || (err == nil && leader.Name != sidekick.Status.Leader.Name) {
 		var pod corev1.Pod
 		e2 := r.Get(ctx, req.NamespacedName, &pod)
 		if e2 == nil {
-			err := r.Delete(ctx, &pod)
+			err := r.deletePod(ctx, &pod)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
-
 			sidekick.Status.Leader.Name = ""
 			sidekick.Status.Pod = ""
-			sidekick.Status.Phase = SidekickPhaseCurrent
 			sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
-			err = r.Status().Update(ctx, &sidekick)
+			err = r.updateSidekickStatus(ctx, &sidekick)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
@@ -140,19 +141,19 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if e2 == nil {
 		expectedHash := meta.GenerationHash(&sidekick)
 		actualHash := pod.Annotations[keyHash]
+
 		if expectedHash != actualHash ||
 			leader.Name != pod.Annotations[keyLeader] ||
-			leader.Spec.NodeName != pod.Spec.NodeName {
-			err := r.Delete(ctx, &pod)
+			leader.Spec.NodeName != pod.Spec.NodeName || (pod.Status.Phase == corev1.PodFailed && sidekick.Spec.RestartPolicy == corev1.RestartPolicyNever) {
+			err := r.deletePod(ctx, &pod)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
 
 			sidekick.Status.Leader.Name = ""
 			sidekick.Status.Pod = ""
-			sidekick.Status.Phase = SidekickPhaseCurrent
 			sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
-			err = r.Status().Update(ctx, &sidekick)
+			err = r.updateSidekickStatus(ctx, &sidekick)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
@@ -161,9 +162,8 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 		// sidekick.Status.Leader.Name = ""
 		sidekick.Status.Pod = pod.Status.Phase
-		sidekick.Status.Phase = SidekickPhaseCurrent
 		sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
-		err := r.Status().Update(ctx, &sidekick)
+		err := r.updateSidekickStatus(ctx, &sidekick)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -178,7 +178,6 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	o2 := metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))
 	o2.Controller = ptr.To(false)
 	o2.BlockOwnerDeletion = ptr.To(false)
-
 	pod = corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            sidekick.Name,
@@ -231,9 +230,9 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if pod.Annotations == nil {
 		pod.Annotations = make(map[string]string)
 	}
+	// Do not alter the assign order
 	pod.Annotations[keyHash] = meta.GenerationHash(&sidekick)
 	pod.Annotations[keyLeader] = leader.Name
-
 	for _, c := range sidekick.Spec.Containers {
 		c2, err := convContainer(leader, c)
 		if err != nil {
@@ -248,17 +247,26 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 		pod.Spec.InitContainers = append(pod.Spec.InitContainers, *c2)
 	}
+	// Adding finalizer to pod because when user will delete this pod using
+	// kubectl delete, then pod will be gracefully terminated which will led
+	// to pod.status.phase: succeeded. We need to control this behaviour.
+	// By adding finalizer, we will know who is deleting the object
+	_, e3 := cu.CreateOrPatch(context.TODO(), r.Client, &pod,
+		func(in client.Object, createOp bool) client.Object {
+			po := in.(*corev1.Pod)
+			po.ObjectMeta = core_util.AddFinalizer(po.ObjectMeta, getFinalizerName())
+			return po
+		},
+	)
 
-	e3 := r.Create(ctx, &pod)
 	if e3 != nil {
 		return ctrl.Result{}, e3
 	}
 
 	sidekick.Status.Leader.Name = leader.Name
 	sidekick.Status.Pod = pod.Status.Phase
-	sidekick.Status.Phase = SidekickPhaseCurrent
 	sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
-	err = r.Status().Update(ctx, &sidekick)
+	err = r.updateSidekickStatus(ctx, &sidekick)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -454,10 +462,14 @@ func (r *SidekickReconciler) terminate(ctx context.Context, sidekick *appsv1alph
 	_, err = cu.CreateOrPatch(context.TODO(), r.Client, sidekick,
 		func(in client.Object, createOp bool) client.Object {
 			sk := in.(*appsv1alpha1.Sidekick)
-			sk.ObjectMeta = core_util.RemoveFinalizer(sk.ObjectMeta, appsv1alpha1.SchemeGroupVersion.Group)
+			sk.ObjectMeta = core_util.RemoveFinalizer(sk.ObjectMeta, getFinalizerName())
 
 			return sk
 		},
 	)
 	return err
+}
+
+func getFinalizerName() string {
+	return appsv1alpha1.SchemeGroupVersion.Group + "/finalizer"
 }

@@ -19592,13 +19592,11 @@ func schema_sidekick_apis_apps_v1alpha1_LeaderStatus(ref common.ReferenceCallbac
 				Properties: map[string]spec.Schema{
 					"name": {
 						SchemaProps: spec.SchemaProps{
-							Default: "",
-							Type:    []string{"string"},
-							Format:  "",
+							Type:   []string{"string"},
+							Format: "",
 						},
 					},
 				},
-				Required: []string{"name"},
 			},
 		},
 	}
@@ -19775,10 +19773,17 @@ func schema_sidekick_apis_apps_v1alpha1_SidekickSpec(ref common.ReferenceCallbac
 					},
 					"restartPolicy": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Restart policy for all containers within the pod. One of Always, OnFailure, Never. Default to Always. More info: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#restart-policy\n\nPossible enum values:\n - `\"Always\"`\n - `\"Never\"`\n - `\"OnFailure\"`",
+							Description: "Restart policy for all containers within the pod. One of Always, OnFailure, Never. Default to Always. More info: https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#restart-policy If your sidekick has restartPolicy = \"OnFailure\", keep in mind that your Pod running the Job will be terminated once the job backoff limit has been reached. This can make debugging the Job's executable more difficult. We suggest setting restartPolicy = \"Never\" when debugging the Job or using a logging system to ensure output from failed Jobs is not lost inadvertently.\n\nPossible enum values:\n - `\"Always\"`\n - `\"Never\"`\n - `\"OnFailure\"`",
 							Type:        []string{"string"},
 							Format:      "",
 							Enum:        []interface{}{"Always", "Never", "OnFailure"},
+						},
+					},
+					"backoffLimit": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Specifies the number of retries before marking this job failed.",
+							Type:        []string{"integer"},
+							Format:      "int32",
 						},
 					},
 					"terminationGracePeriodSeconds": {
@@ -20127,7 +20132,6 @@ func schema_sidekick_apis_apps_v1alpha1_SidekickStatus(ref common.ReferenceCallb
 					"pod": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Possible enum values:\n - `\"Failed\"` means that all containers in the pod have terminated, and at least one container has terminated in a failure (exited with a non-zero exit code or was stopped by the system).\n - `\"Pending\"` means the pod has been accepted by the system, but one or more of the containers has not been started. This includes time before being bound to a node, as well as time spent pulling images onto the host.\n - `\"Running\"` means the pod has been bound to a node and all of the containers have been started. At least one container is still running or is in the process of being restarted.\n - `\"Succeeded\"` means that all containers in the pod have voluntarily terminated with a container exit code of 0, and the system is not going to restart any of these containers.\n - `\"Unknown\"` means that for some reason the state of the pod could not be obtained, typically due to an error in communicating with the host of the pod. Deprecated: It isn't being set since 2015 (74da3b14b0c0f658b3bb8d2def5094686d0e9095)",
-							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
 							Enum:        []interface{}{"Failed", "Pending", "Running", "Succeeded", "Unknown"},
@@ -20161,8 +20165,39 @@ func schema_sidekick_apis_apps_v1alpha1_SidekickStatus(ref common.ReferenceCallb
 							},
 						},
 					},
+					"containerRestartCountsPerPod": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerRestartCountsPerPod stores the sum of all container restart counts of a pod",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: 0,
+										Type:    []string{"integer"},
+										Format:  "int32",
+									},
+								},
+							},
+						},
+					},
+					"failureCount": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FailuerCount tracks the total number of failed pods",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: false,
+										Type:    []string{"boolean"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
 				},
-				Required: []string{"leader", "pod"},
 			},
 		},
 		Dependencies: []string{
