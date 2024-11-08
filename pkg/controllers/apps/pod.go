@@ -23,7 +23,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/klog/v2"
 	cu "kmodules.xyz/client-go/client"
 	core_util "kmodules.xyz/client-go/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -109,8 +108,6 @@ func (r *SidekickReconciler) setDeletionInitiatorAnnotation(ctx context.Context,
 			return po
 		},
 	)
-	klog.Infoln("pod annotation set: ", pod.Annotations)
-
 	return err
 }
 

@@ -23,7 +23,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
 	cu "kmodules.xyz/client-go/client"
 	core_util "kmodules.xyz/client-go/core/v1"
@@ -96,11 +95,9 @@ func (r *SidekickReconciler) calculateSidekickPhase(ctx context.Context, sidekic
 	if err != nil && !errors.IsNotFound(err) {
 		return sidekick.Status.Phase, err
 	}
-
 	if err == nil {
 		restartCounter := getContainerRestartCounts(&pod)
 		podUID := string(pod.GetUID())
-
 		sidekick.Status.ContainerRestartCountsPerPod[podUID] = restartCounter
 		if pod.Status.Phase == corev1.PodFailed && pod.ObjectMeta.DeletionTimestamp == nil {
 			sidekick.Status.FailureCount[podUID] = true
@@ -110,7 +107,6 @@ func (r *SidekickReconciler) calculateSidekickPhase(ctx context.Context, sidekic
 				sidekick.Status.FailureCount[podUID] = false
 			}
 		}
-
 	}
 
 	phase := r.getSidekickPhase(sidekick, &pod)
@@ -170,7 +166,6 @@ func getTotalBackOffCounts(sidekick *appsv1alpha1.Sidekick) int32 {
 	if sidekick.Spec.BackoffLimit == nil {
 		sidekick.Spec.BackoffLimit = ptr.To(int32(0))
 	}
-	klog.Infoln(*sidekick.Spec.BackoffLimit, totalContainerRestartCount, failureCount)
 	return failureCount + totalContainerRestartCount
 }
 

@@ -141,6 +141,7 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if e2 == nil {
 		expectedHash := meta.GenerationHash(&sidekick)
 		actualHash := pod.Annotations[keyHash]
+
 		if expectedHash != actualHash ||
 			leader.Name != pod.Annotations[keyLeader] ||
 			leader.Spec.NodeName != pod.Spec.NodeName || (pod.Status.Phase == corev1.PodFailed && sidekick.Spec.RestartPolicy == corev1.RestartPolicyNever) {
