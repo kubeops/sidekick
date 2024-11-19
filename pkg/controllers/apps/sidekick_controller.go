@@ -145,11 +145,13 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if expectedHash != actualHash ||
 			leader.Name != pod.Annotations[keyLeader] ||
 			leader.Spec.NodeName != pod.Spec.NodeName || (pod.Status.Phase == corev1.PodFailed && sidekick.Spec.RestartPolicy == corev1.RestartPolicyNever) {
+			if leader.Spec.NodeName != pod.Spec.NodeName && pod.Spec.NodeName != "" {
+				sidekick.Status.FailureCount[string(pod.GetUID())] = true
+			}
 			err := r.deletePod(ctx, &pod)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
-
 			sidekick.Status.Leader.Name = ""
 			sidekick.Status.Pod = ""
 			sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
