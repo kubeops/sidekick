@@ -35,7 +35,6 @@ import (
 	"k8s.io/klog/v2"
 	clustermeta "kmodules.xyz/client-go/cluster"
 	"kmodules.xyz/client-go/meta"
-	_ "kmodules.xyz/client-go/meta"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -59,12 +58,12 @@ func NewCmdRun() *cobra.Command {
 		QPS   float32 = 1e6
 		Burst int     = 1e6
 
-		metricsAddr          string = "0"
+		metricsAddr          = "0"
 		certDir              string
-		enableLeaderElection bool   = false
-		probeAddr            string = ":8081"
-		secureMetrics        bool   = true
-		enableHTTP2          bool   = false
+		enableLeaderElection = false
+		probeAddr            = ":8081"
+		secureMetrics        = true
+		enableHTTP2          = false
 	)
 	cmd := &cobra.Command{
 		Use:               "run",

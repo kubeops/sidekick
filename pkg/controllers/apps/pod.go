@@ -46,7 +46,7 @@ func (r *SidekickReconciler) removePodFinalizerIfMarkedForDeletion(ctx context.C
 		// if the pod was terminated externally, then it will not have
 		// deletionInitiatorKey set in its annotations
 
-		_, exists := pod.ObjectMeta.Annotations[deletionInitiatorKey]
+		_, exists := pod.Annotations[deletionInitiatorKey]
 		if !exists {
 			var sk appsv1alpha1.Sidekick
 			err = r.Get(ctx, req.NamespacedName, &sk)
@@ -104,7 +104,7 @@ func (r *SidekickReconciler) setDeletionInitiatorAnnotation(ctx context.Context,
 	_, err := cu.CreateOrPatch(ctx, r.Client, pod,
 		func(in client.Object, createOp bool) client.Object {
 			po := in.(*corev1.Pod)
-			po.ObjectMeta.Annotations[deletionInitiatorKey] = deletionInitiatesBySidekickOperator
+			po.Annotations[deletionInitiatorKey] = deletionInitiatesBySidekickOperator
 			return po
 		},
 	)
