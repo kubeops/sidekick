@@ -237,7 +237,7 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 		pod.Spec.InitContainers = append(pod.Spec.InitContainers, *c2)
 	}
 
-	err = r.ensurePodManifestWork(context.TODO(), &sidekick, &pod)
+	err = r.ensurePodManifestWork(&sidekick, &pod)
 	if err != nil {
 		klog.V(5).Infoln("error on manifest work creation, err:", err)
 		return ctrl.Result{}, err
@@ -253,7 +253,7 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 	return ctrl.Result{}, nil
 }
 
-func (r *SidekickReconciler) ensurePodManifestWork(ctx context.Context, sidekick *appsv1alpha1.Sidekick, pod *corev1.Pod) error {
+func (r *SidekickReconciler) ensurePodManifestWork(sidekick *appsv1alpha1.Sidekick, pod *corev1.Pod) error {
 	namespace := pod.Annotations[ManifestWorkClusterNameLabel]
 	if namespace == "" {
 		return fmt.Errorf("%v annotation is empty for pod %v/%v", ManifestWorkClusterNameLabel, pod.Namespace, pod.Name)
@@ -276,10 +276,6 @@ func (r *SidekickReconciler) ensurePodManifestWork(ctx context.Context, sidekick
 	}
 
 	labels["sidekick-name"] = sidekick.Name
-	annotations := sidekick.Annotations
-	if annotations == nil {
-		annotations = make(map[string]string)
-	}
 
 	mw := &apiworkv1.ManifestWork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -394,7 +390,7 @@ func (r *SidekickReconciler) findDistributedLeader(ctx context.Context, sidekick
 		}
 
 		var err2 error
-		leader := &corev1.Pod{}
+		var leader *corev1.Pod
 		if leader, err2 = ExtractPodFromManifestWork(mw); err2 != nil {
 			logger.Error(err2, "unable to fetch Leader", "leader", sidekick.Spec.Leader.Name)
 			// we'll ignore not-found errors, since they can't be fixed by an immediate
@@ -664,21 +660,26 @@ func (r *SidekickReconciler) getDistributedSidekickPhase(sidekick *appsv1alpha1.
 
 func (r *SidekickReconciler) getDistributedPodNamespace(ctx context.Context, mwName string) (string, error) {
 	// Get all namespaces
+	var err error
 	var nsList corev1.NamespaceList
-	err := r.List(ctx, &nsList, &client.ListOptions{})
+	err = r.List(ctx, &nsList, &client.ListOptions{})
 	if err != nil {
 		return "", err
 	}
-
+	namespace := ""
 	for _, ns := range nsList.Items {
-		mw, err := r.OCMClient.WorkV1().ManifestWorks(ns.Name).Get(ctx, mwName, metav1.GetOptions{})
-		if err != nil && !errors.IsNotFound(err) {
-			return "", err
+		mw, err2 := r.OCMClient.WorkV1().ManifestWorks(ns.Name).Get(ctx, mwName, metav1.GetOptions{})
+		if err2 != nil && !errors.IsNotFound(err2) {
+			return "", err2
 		}
-		return mw.Namespace, nil
+		if err2 == nil && mw != nil {
+			namespace = mw.Namespace
+			break
+		}
+		err = err2
 	}
 
-	return "", fmt.Errorf("%s pod namespace not found", mwName)
+	return namespace, err
 }
 
 func (r *SidekickReconciler) deleteMW(ctx context.Context, mw *apiworkv1.ManifestWork) error {

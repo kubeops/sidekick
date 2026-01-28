@@ -35,7 +35,6 @@ import (
 	"k8s.io/klog/v2"
 	clustermeta "kmodules.xyz/client-go/cluster"
 	"kmodules.xyz/client-go/meta"
-	_ "kmodules.xyz/client-go/meta"
 	ocmclient "open-cluster-management.io/api/client/work/clientset/versioned"
 	apiworkv1 "open-cluster-management.io/api/work/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -55,7 +54,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(appsv1alpha1.AddToScheme(scheme))
 	// Add ManifestWork (open-cluster-management) types so runtime can recognize them
-	utilruntime.Must(apiworkv1.AddToScheme(scheme))
+	utilruntime.Must(apiworkv1.Install(scheme))
 }
 
 func NewCmdRun() *cobra.Command {
