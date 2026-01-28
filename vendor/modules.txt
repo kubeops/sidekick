@@ -1194,6 +1194,15 @@ kmodules.xyz/client-go/client/apiutil
 kmodules.xyz/client-go/cluster
 kmodules.xyz/client-go/core/v1
 kmodules.xyz/client-go/meta
+# open-cluster-management.io/api v1.2.0
+## explicit; go 1.25.0
+open-cluster-management.io/api/client/work/clientset/versioned
+open-cluster-management.io/api/client/work/clientset/versioned/scheme
+open-cluster-management.io/api/client/work/clientset/versioned/typed/work/v1
+open-cluster-management.io/api/client/work/clientset/versioned/typed/work/v1alpha1
+open-cluster-management.io/api/cluster/v1alpha1
+open-cluster-management.io/api/work/v1
+open-cluster-management.io/api/work/v1alpha1
 # sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.31.2
 ## explicit; go 1.21
 sigs.k8s.io/apiserver-network-proxy/konnectivity-client/pkg/client

@@ -21036,6 +21036,13 @@ func schema_sidekick_apis_apps_v1alpha1_SidekickSpec(ref common.ReferenceCallbac
 							},
 						},
 					},
+					"distributed": {
+						SchemaProps: spec.SchemaProps{
+							Description: "specify if the pod is distributed or not",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 				},
 				Required: []string{"leader", "containers"},
 			},

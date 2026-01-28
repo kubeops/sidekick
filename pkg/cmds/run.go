@@ -35,6 +35,9 @@ import (
 	"k8s.io/klog/v2"
 	clustermeta "kmodules.xyz/client-go/cluster"
 	"kmodules.xyz/client-go/meta"
+	_ "kmodules.xyz/client-go/meta"
+	ocmclient "open-cluster-management.io/api/client/work/clientset/versioned"
+	apiworkv1 "open-cluster-management.io/api/work/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -51,6 +54,8 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(appsv1alpha1.AddToScheme(scheme))
+	// Add ManifestWork (open-cluster-management) types so runtime can recognize them
+	utilruntime.Must(apiworkv1.AddToScheme(scheme))
 }
 
 func NewCmdRun() *cobra.Command {
@@ -169,10 +174,16 @@ func NewCmdRun() *cobra.Command {
 				setupLog.Error(err, "unable to start manager")
 				os.Exit(1)
 			}
+			ocmClient, err := ocmclient.NewForConfig(mgr.GetConfig())
+			if err != nil {
+				setupLog.Error(err, "failed to create app catalog client")
+				os.Exit(1)
+			}
 
 			if err = (&appscontrollers.SidekickReconciler{
-				Client: mgr.GetClient(),
-				Scheme: mgr.GetScheme(),
+				Client:    mgr.GetClient(),
+				Scheme:    mgr.GetScheme(),
+				OCMClient: ocmClient,
 			}).SetupWithManager(mgr); err != nil {
 				setupLog.Error(err, "unable to create controller", "controller", "Sidekick")
 				os.Exit(1)
