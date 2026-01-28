@@ -48,7 +48,7 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 		return ctrl.Result{}, err
 	}
 
-	dropKey, err := r.updatedistributedSidekickPhase(ctx, req, &sidekick)
+	dropKey, err := r.updateDistributedSidekickPhase(ctx, req, &sidekick)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -60,31 +60,34 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 
 	if errors.IsNotFound(err) || (err == nil && leader.Name != sidekick.Status.Leader.Name) {
 		ns, err2 := r.getDistributedPodNamespace(ctx, req.Name)
-		if err2 != nil {
-			return ctrl.Result{}, err2
-		}
-
 		var mw apiworkv1.ManifestWork
-		nsName := types.NamespacedName{
-			Name:      sidekick.Name,
-			Namespace: ns,
+
+		e2 := err2
+		if err2 == nil {
+			nsName := types.NamespacedName{
+				Name:      sidekick.Name,
+				Namespace: ns,
+			}
+			e2 = r.Get(ctx, nsName, &mw)
 		}
 
-		e2 := r.Get(ctx, nsName, &mw)
 		if e2 == nil {
 			err := r.deleteMW(ctx, &mw)
 			if err != nil {
 				klog.V(5).Infof("error on deleting mw %v/%v, error: %v", mw.Namespace, mw.Name, err)
 				return ctrl.Result{}, err
 			}
+
 			sidekick.Status.Leader.Name = ""
 			sidekick.Status.Pod = ""
 			sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
+
 			err = r.updateDistributedSidekickStatus(ctx, &sidekick)
 			if err != nil {
 				klog.V(5).Infoln("update sidekick error", err)
 				return ctrl.Result{}, err
 			}
+
 			return ctrl.Result{}, nil
 		} else if err != nil {
 			return ctrl.Result{
@@ -99,13 +102,21 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 	}
 
 	var mw apiworkv1.ManifestWork
-	e2 := r.Get(ctx, req.NamespacedName, &mw)
+	ns, err2 := r.getDistributedPodNamespace(ctx, req.Name)
+	e2 := err2
+	if err2 == nil {
+		nsName := types.NamespacedName{
+			Name:      sidekick.Name,
+			Namespace: ns,
+		}
+		e2 = r.Get(ctx, nsName, &mw)
+	}
+
 	if e2 != nil && !errors.IsNotFound(e2) {
 		return ctrl.Result{}, client.IgnoreNotFound(e2)
 	}
 
 	if e2 == nil {
-
 		podPhase := r.extractPodStatusFromMW(&mw)
 		pod, err := ExtractPodFromManifestWork(&mw)
 		if err != nil {
@@ -539,7 +550,7 @@ func (r *SidekickReconciler) getDistributedSidekickCurrentLeader(ctx context.Con
 	return nil, err
 }
 
-func (r *SidekickReconciler) updatedistributedSidekickPhase(ctx context.Context, req ctrl.Request, sidekick *appsv1alpha1.Sidekick) (bool, error) {
+func (r *SidekickReconciler) updateDistributedSidekickPhase(ctx context.Context, req ctrl.Request, sidekick *appsv1alpha1.Sidekick) (bool, error) {
 	phase, err := r.calculateDistributedSidekickPhase(ctx, sidekick)
 	if err != nil {
 		return false, err
