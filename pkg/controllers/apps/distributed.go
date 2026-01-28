@@ -261,8 +261,8 @@ func (r *SidekickReconciler) ensurePodManifestWork(ctx context.Context, sidekick
 
 	pod.APIVersion = "v1"
 	pod.Kind = "Pod"
-	pod.ObjectMeta.GenerateName = ""
-	pod.ObjectMeta.OwnerReferences = nil
+	pod.GenerateName = ""
+	pod.OwnerReferences = nil
 
 	podUnstructured, err := runtime.DefaultUnstructuredConverter.ToUnstructured(pod)
 	if err != nil {
@@ -422,7 +422,7 @@ func (r *SidekickReconciler) findDistributedLeader(ctx context.Context, sidekick
 
 	// Get all namespaces
 	var nsList corev1.NamespaceList
-	err := r.Client.List(ctx, &nsList, &client.ListOptions{})
+	err := r.List(ctx, &nsList, &client.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -526,7 +526,7 @@ func (r *SidekickReconciler) findDistributedLeader(ctx context.Context, sidekick
 func (r *SidekickReconciler) getDistributedSidekickCurrentLeader(ctx context.Context, sidekick appsv1alpha1.Sidekick) (*apiworkv1.ManifestWork, error) {
 	// Get all namespaces
 	var nsList corev1.NamespaceList
-	err := r.Client.List(ctx, &nsList, &client.ListOptions{})
+	err := r.List(ctx, &nsList, &client.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -604,7 +604,7 @@ func (r *SidekickReconciler) calculateDistributedSidekickPhase(ctx context.Conte
 		podUID := string(leader.GetUID())
 		sidekick.Status.ContainerRestartCountsPerPod[podUID] = restartCounter
 		phase := r.extractPodStatusFromMW(leader)
-		if phase == string(corev1.PodFailed) && leader.ObjectMeta.DeletionTimestamp == nil {
+		if phase == string(corev1.PodFailed) && leader.DeletionTimestamp == nil {
 			sidekick.Status.FailureCount[podUID] = true
 			// case: restartPolicy OnFailure and backOffLimit crosses when last time pod restarts,
 			// in that situation we need to fail the pod, but this manual failure shouldn't take into account
@@ -665,7 +665,7 @@ func (r *SidekickReconciler) getDistributedSidekickPhase(sidekick *appsv1alpha1.
 func (r *SidekickReconciler) getDistributedPodNamespace(ctx context.Context, mwName string) (string, error) {
 	// Get all namespaces
 	var nsList corev1.NamespaceList
-	err := r.Client.List(ctx, &nsList, &client.ListOptions{})
+	err := r.List(ctx, &nsList, &client.ListOptions{})
 	if err != nil {
 		return "", err
 	}
@@ -693,10 +693,10 @@ func (r *SidekickReconciler) setMWDeletionInitiatorAnnotation(ctx context.Contex
 	_, err := cu.CreateOrPatch(ctx, r.Client, mw,
 		func(in client.Object, createOp bool) client.Object {
 			po := in.(*apiworkv1.ManifestWork)
-			if po.ObjectMeta.Annotations == nil {
-				po.ObjectMeta.Annotations = make(map[string]string)
+			if po.Annotations == nil {
+				po.Annotations = make(map[string]string)
 			}
-			po.ObjectMeta.Annotations[deletionInitiatorKey] = deletionInitiatesBySidekickOperator
+			po.Annotations[deletionInitiatorKey] = deletionInitiatesBySidekickOperator
 			return po
 		},
 	)
@@ -741,9 +741,9 @@ func getPodPhase(podPhase string) corev1.PodPhase {
 func ExtractPodFromManifestWork(mw *apiworkv1.ManifestWork) (*corev1.Pod, error) {
 	pod := &corev1.Pod{}
 	manifest := mw.Spec.Workload.Manifests[0]
-	unstructuredObj := make(map[string]interface{})
+	unstructuredObj := make(map[string]any)
 
-	err := json.Unmarshal(manifest.RawExtension.Raw, &unstructuredObj)
+	err := json.Unmarshal(manifest.Raw, &unstructuredObj)
 	if err != nil {
 		return nil, err
 	}
