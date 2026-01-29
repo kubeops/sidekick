@@ -1,3 +1,19 @@
+/*
+Copyright AppsCode Inc. and Contributors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package apps
 
 import (
@@ -803,6 +819,23 @@ func extractRestartCountFromJSONRaw(value *string) int32 {
 		}
 	}
 	return restartCounter
+}
+
+func (r *SidekickReconciler) handleDistributedSidekickFinalizer(ctx context.Context, sidekick *appsv1alpha1.Sidekick) error {
+	if sidekick.DeletionTimestamp != nil {
+		if core_util.HasFinalizer(sidekick.ObjectMeta, getFinalizerName()) {
+			return r.terminateManifestWork(ctx, sidekick)
+		}
+	}
+
+	_, err := cu.CreateOrPatch(ctx, r.Client, sidekick,
+		func(in client.Object, createOp bool) client.Object {
+			sk := in.(*appsv1alpha1.Sidekick)
+			sk.ObjectMeta = core_util.AddFinalizer(sk.ObjectMeta, getFinalizerName())
+			return sk
+		},
+	)
+	return err
 }
 
 func (r *SidekickReconciler) terminateManifestWork(ctx context.Context, sidekick *appsv1alpha1.Sidekick) error {
