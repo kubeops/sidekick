@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	cu "kmodules.xyz/client-go/client"
+	core_util "kmodules.xyz/client-go/core/v1"
 	"kmodules.xyz/client-go/meta"
 	apiworkv1 "open-cluster-management.io/api/work/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -43,7 +44,7 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	err := r.handleSidekickFinalizer(ctx, &sidekick)
+	err := r.handleDistributedSidekickFinalizer(ctx, &sidekick)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -802,4 +803,32 @@ func extractRestartCountFromJSONRaw(value *string) int32 {
 		}
 	}
 	return restartCounter
+}
+
+func (r *SidekickReconciler) terminateManifestWork(ctx context.Context, sidekick *appsv1alpha1.Sidekick) error {
+	ns, err := r.getDistributedPodNamespace(ctx, sidekick.Name)
+	if err != nil && !errors.IsNotFound(err) {
+		return err
+	}
+	if ns != "" {
+		err = r.Delete(ctx, &apiworkv1.ManifestWork{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      sidekick.Name,
+				Namespace: ns,
+			},
+		})
+		if err != nil && !errors.IsNotFound(err) {
+			return err
+		}
+	}
+
+	_, err = cu.CreateOrPatch(context.TODO(), r.Client, sidekick,
+		func(in client.Object, createOp bool) client.Object {
+			sk := in.(*appsv1alpha1.Sidekick)
+			sk.ObjectMeta = core_util.RemoveFinalizer(sk.ObjectMeta, getFinalizerName())
+
+			return sk
+		},
+	)
+	return err
 }

@@ -179,6 +179,23 @@ func getFailureCountFromSidekickStatus(sidekick *appsv1alpha1.Sidekick) int32 {
 	return failureCount
 }
 
+func (r *SidekickReconciler) handleDistributedSidekickFinalizer(ctx context.Context, sidekick *appsv1alpha1.Sidekick) error {
+	if sidekick.DeletionTimestamp != nil {
+		if core_util.HasFinalizer(sidekick.ObjectMeta, getFinalizerName()) {
+			return r.terminateManifestWork(ctx, sidekick)
+		}
+	}
+
+	_, err := cu.CreateOrPatch(ctx, r.Client, sidekick,
+		func(in client.Object, createOp bool) client.Object {
+			sk := in.(*appsv1alpha1.Sidekick)
+			sk.ObjectMeta = core_util.AddFinalizer(sk.ObjectMeta, getFinalizerName())
+			return sk
+		},
+	)
+	return err
+}
+
 func getTotalContainerRestartCounts(sidekick *appsv1alpha1.Sidekick) int32 {
 	totalContainerRestartCount := int32(0)
 	for _, value := range sidekick.Status.ContainerRestartCountsPerPod {
