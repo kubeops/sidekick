@@ -2372,6 +2372,9 @@ spec:
                   - name
                   type: object
                 type: array
+              distributed:
+                description: specify if the pod is distributed or not
+                type: boolean
               dnsConfig:
                 description: |-
                   Specifies the DNS parameters of a pod.

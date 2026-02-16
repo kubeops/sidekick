@@ -344,6 +344,10 @@ type SidekickSpec struct {
 	// +patchMergeKey=name
 	// +patchStrategy=merge,retainKeys
 	Volumes []core.Volume `json:"volumes,omitempty" patchStrategy:"merge,retainKeys" patchMergeKey:"name"`
+
+	// specify if the pod is distributed or not
+	// +optional
+	Distributed bool `json:"distributed,omitempty"`
 }
 
 // A single application container that you want to run within a pod.

@@ -37,6 +37,8 @@ import (
 	cu "kmodules.xyz/client-go/client"
 	core_util "kmodules.xyz/client-go/core/v1"
 	"kmodules.xyz/client-go/meta"
+	ocmclient "open-cluster-management.io/api/client/work/clientset/versioned"
+	apiworkv1 "open-cluster-management.io/api/work/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -55,7 +57,8 @@ const (
 // SidekickReconciler reconciles a Sidekick object
 type SidekickReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme    *runtime.Scheme
+	OCMClient ocmclient.Interface
 }
 
 //+kubebuilder:rbac:groups=apps.k8s.appscode.com,resources=sidekicks,verbs=get;list;watch;create;update;patch;delete
@@ -72,7 +75,7 @@ type SidekickReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.13.0/pkg/reconcile
 func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	klog.Infoln(fmt.Sprintf("reconciling %v ", req.NamespacedName))
+	klog.Infof("reconciling %v ", req.NamespacedName)
 	logger := log.FromContext(ctx, "sidekick", req.Name, "ns", req.Namespace)
 	ctx = log.IntoContext(ctx, logger)
 
@@ -92,7 +95,9 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// on deleted requests.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-
+	if sidekick.Spec.Distributed {
+		return r.ReconcileDistributedSidekick(ctx, req)
+	}
 	err = r.handleSidekickFinalizer(ctx, &sidekick)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -240,7 +245,15 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if err != nil {
 			return ctrl.Result{}, err
 		}
+		if c2.Env == nil {
+			c2.Env = make([]corev1.EnvVar, 0)
+		}
+		c2.Env = append(c2.Env, corev1.EnvVar{
+			Name:  "LEADER_NAME",
+			Value: leader.Name,
+		})
 		pod.Spec.Containers = append(pod.Spec.Containers, *c2)
+
 	}
 	for _, c := range sidekick.Spec.InitContainers {
 		c2, err := convContainer(leader, c)
@@ -380,7 +393,6 @@ func (r *SidekickReconciler) getLeader(ctx context.Context, sidekick appsv1alpha
 		}
 		return &leader, nil
 	}
-
 	var candidates corev1.PodList
 	opts := []client.ListOption{client.InNamespace(sidekick.Namespace)}
 	if sidekick.Spec.Leader.Selector != nil {
@@ -438,7 +450,25 @@ func (r *SidekickReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 		return req
 	})
-	return ctrl.NewControllerManagedBy(mgr).
+
+	// Map ManifestWork changes to Sidekick reconcile requests. ManifestWorks are created with
+	// the same name as the Sidekick (pod name) and are labeled with "sidekick-name" so we
+	// find Sidekick objects with matching name across namespaces and enqueue them.
+	mwHandler := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, a client.Object) []reconcile.Request {
+		sidekicks := &appsv1alpha1.SidekickList{}
+		if err := r.List(ctx, sidekicks, &client.ListOptions{}); err != nil {
+			return nil
+		}
+		var req []reconcile.Request
+		for _, c := range sidekicks.Items {
+			if c.Name == a.GetName() {
+				req = append(req, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&c)})
+			}
+		}
+		return req
+	})
+
+	blder := ctrl.NewControllerManagedBy(mgr).
 		For(&appsv1alpha1.Sidekick{}, builder.WithPredicates(predicate.NewPredicateFuncs(func(o client.Object) bool {
 			return !meta.MustAlreadyReconciled(o)
 		}))).
@@ -446,8 +476,17 @@ func (r *SidekickReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.Pod{}, leaderHandler).
 		WithOptions(
 			controller.Options{MaxConcurrentReconciles: 5},
-		).
-		Complete(r)
+		)
+
+	// build GVK without using the deprecated generated SchemeGroupVersion variable
+	gv := schema.GroupVersion{Group: apiworkv1.GroupName, Version: "v1"}
+	gvk := gv.WithKind("ManifestWork")
+	_, err := mgr.GetClient().RESTMapper().RESTMapping(gvk.GroupKind(), gvk.Version)
+	if err == nil {
+		blder = blder.Watches(&apiworkv1.ManifestWork{}, mwHandler)
+	}
+
+	return blder.Complete(r)
 }
 
 func (r *SidekickReconciler) terminate(ctx context.Context, sidekick *appsv1alpha1.Sidekick) error {
