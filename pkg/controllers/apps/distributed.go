@@ -49,7 +49,7 @@ const (
 
 func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-	klog.Infoln(fmt.Sprintf("Starting reconciliation for distributed sidekick %v ", req.NamespacedName))
+	klog.Infof("Starting reconciliation for distributed sidekick %v ", req.NamespacedName)
 
 	var sidekick appsv1alpha1.Sidekick
 	if err := r.Get(ctx, req.NamespacedName, &sidekick); err != nil {
