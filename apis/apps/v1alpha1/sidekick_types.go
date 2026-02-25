@@ -353,7 +353,7 @@ type SidekickSpec struct {
 	// ExtraArgs contains extra arguments that will be passed to the sidekick.
 	// It's useful when you want to pass some custom arguments
 	// to the sidekick which are not defined in the SidekickSpec.
-	//+optional
+	// +optional
 	ExtraArgs map[string]runtime.RawExtension `json:"extraArgs,omitempty"`
 }
 
