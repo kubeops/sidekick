@@ -21043,12 +21043,26 @@ func schema_sidekick_apis_apps_v1alpha1_SidekickSpec(ref common.ReferenceCallbac
 							Format:      "",
 						},
 					},
+					"extraArgs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ExtraArgs contains extra arguments that will be passed to the sidekick. It's useful when you want to pass some custom arguments to the sidekick which are not defined in the SidekickSpec.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("k8s.io/apimachinery/pkg/runtime.RawExtension"),
+									},
+								},
+							},
+						},
+					},
 				},
 				Required: []string{"leader", "containers"},
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/api/core/v1.Affinity", "k8s.io/api/core/v1.EphemeralContainer", "k8s.io/api/core/v1.HostAlias", "k8s.io/api/core/v1.LocalObjectReference", "k8s.io/api/core/v1.PodDNSConfig", "k8s.io/api/core/v1.PodOS", "k8s.io/api/core/v1.PodReadinessGate", "k8s.io/api/core/v1.PodSecurityContext", "k8s.io/api/core/v1.Toleration", "k8s.io/api/core/v1.TopologySpreadConstraint", "k8s.io/api/core/v1.Volume", "k8s.io/apimachinery/pkg/api/resource.Quantity", "kubeops.dev/sidekick/apis/apps/v1alpha1.Container", "kubeops.dev/sidekick/apis/apps/v1alpha1.LeaderSpec"},
+			"k8s.io/api/core/v1.Affinity", "k8s.io/api/core/v1.EphemeralContainer", "k8s.io/api/core/v1.HostAlias", "k8s.io/api/core/v1.LocalObjectReference", "k8s.io/api/core/v1.PodDNSConfig", "k8s.io/api/core/v1.PodOS", "k8s.io/api/core/v1.PodReadinessGate", "k8s.io/api/core/v1.PodSecurityContext", "k8s.io/api/core/v1.Toleration", "k8s.io/api/core/v1.TopologySpreadConstraint", "k8s.io/api/core/v1.Volume", "k8s.io/apimachinery/pkg/api/resource.Quantity", "k8s.io/apimachinery/pkg/runtime.RawExtension", "kubeops.dev/sidekick/apis/apps/v1alpha1.Container", "kubeops.dev/sidekick/apis/apps/v1alpha1.LeaderSpec"},
 	}
 }
 

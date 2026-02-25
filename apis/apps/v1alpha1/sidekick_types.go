@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	core "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	kmapi "kmodules.xyz/client-go/api/v1"
 )
 
@@ -348,6 +349,12 @@ type SidekickSpec struct {
 	// specify if the pod is distributed or not
 	// +optional
 	Distributed bool `json:"distributed,omitempty"`
+
+	// ExtraArgs contains extra arguments that will be passed to the sidekick.
+	// It's useful when you want to pass some custom arguments
+	// to the sidekick which are not defined in the SidekickSpec.
+	//+optional
+	ExtraArgs map[string]runtime.RawExtension `json:"extraArgs,omitempty"`
 }
 
 // A single application container that you want to run within a pod.
