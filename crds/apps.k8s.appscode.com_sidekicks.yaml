@@ -3928,6 +3928,15 @@ spec:
                   - name
                   type: object
                 type: array
+              extraArgs:
+                additionalProperties:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                description: |-
+                  ExtraArgs contains extra arguments that will be passed to the sidekick.
+                  It's useful when you want to pass some custom arguments
+                  to the sidekick which are not defined in the SidekickSpec.
+                type: object
               hostAliases:
                 description: |-
                   HostAliases is an optional list of hosts and IPs that will be injected into the pod's hosts

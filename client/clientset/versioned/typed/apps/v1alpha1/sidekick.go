@@ -22,13 +22,12 @@ import (
 	"context"
 	"time"
 
-	v1alpha1 "kubeops.dev/sidekick/apis/apps/v1alpha1"
-	scheme "kubeops.dev/sidekick/client/clientset/versioned/scheme"
-
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
 	rest "k8s.io/client-go/rest"
+	v1alpha1 "kubeops.dev/sidekick/apis/apps/v1alpha1"
+	scheme "kubeops.dev/sidekick/client/clientset/versioned/scheme"
 )
 
 // SidekicksGetter has a method to return a SidekickInterface.
