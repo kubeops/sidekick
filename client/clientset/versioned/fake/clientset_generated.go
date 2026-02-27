@@ -19,14 +19,15 @@ limitations under the License.
 package fake
 
 import (
+	clientset "kubeops.dev/sidekick/client/clientset/versioned"
+	appsv1alpha1 "kubeops.dev/sidekick/client/clientset/versioned/typed/apps/v1alpha1"
+	fakeappsv1alpha1 "kubeops.dev/sidekick/client/clientset/versioned/typed/apps/v1alpha1/fake"
+
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/testing"
-	clientset "kubeops.dev/sidekick/client/clientset/versioned"
-	appsv1alpha1 "kubeops.dev/sidekick/client/clientset/versioned/typed/apps/v1alpha1"
-	fakeappsv1alpha1 "kubeops.dev/sidekick/client/clientset/versioned/typed/apps/v1alpha1/fake"
 )
 
 // NewSimpleClientset returns a clientset that will respond with the provided objects.
