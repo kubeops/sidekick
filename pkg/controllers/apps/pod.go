@@ -104,6 +104,9 @@ func (r *SidekickReconciler) setDeletionInitiatorAnnotation(ctx context.Context,
 	_, err := cu.CreateOrPatch(ctx, r.Client, pod,
 		func(in client.Object, createOp bool) client.Object {
 			po := in.(*corev1.Pod)
+			if po.Annotations == nil {
+				po.Annotations = make(map[string]string)
+			}
 			po.Annotations[deletionInitiatorKey] = deletionInitiatesBySidekickOperator
 			return po
 		},
