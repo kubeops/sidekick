@@ -110,103 +110,97 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	leader, err := r.getLeader(ctx, sidekick)
-
 	if errors.IsNotFound(err) || (err == nil && leader.Name != sidekick.Status.Leader.Name) {
+		// Leader is gone or changed: remove the existing sidekick pod, if any.
 		var pod corev1.Pod
-		e2 := r.Get(ctx, req.NamespacedName, &pod)
-		if e2 == nil {
-			err := r.deletePod(ctx, &pod)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-			sidekick.Status.Leader.Name = ""
-			sidekick.Status.Pod = ""
-			sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
-			err = r.updateSidekickStatus(ctx, &sidekick)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{}, nil
+		getErr := r.Get(ctx, req.NamespacedName, &pod)
+		if getErr == nil {
+			return ctrl.Result{}, r.deletePodAndResetStatus(ctx, &sidekick, &pod)
 		} else if err != nil {
+			// No leader and no pod: wait for a leader to appear.
 			return ctrl.Result{
 				Requeue:      true,
 				RequeueAfter: time.Second * 10,
 			}, client.IgnoreNotFound(err)
 		}
+		// Leader changed but the pod is already gone; fall through to create
+		// a pod for the new leader.
 	} else if err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	var pod corev1.Pod
-	e2 := r.Get(ctx, req.NamespacedName, &pod)
-	if e2 != nil && !errors.IsNotFound(e2) {
-		return ctrl.Result{}, client.IgnoreNotFound(e2)
-	}
-	if e2 == nil {
-		expectedHash := meta.GenerationHash(&sidekick)
-		actualHash := pod.Annotations[keyHash]
-
-		if expectedHash != actualHash ||
-			leader.Name != pod.Annotations[keyLeader] ||
-			leader.Spec.NodeName != pod.Spec.NodeName || (pod.Status.Phase == corev1.PodFailed && sidekick.Spec.RestartPolicy == corev1.RestartPolicyNever) {
-			if leader.Spec.NodeName != pod.Spec.NodeName && pod.Spec.NodeName != "" {
-				sidekick.Status.FailureCount[string(pod.GetUID())] = true
-			}
-			err := r.deletePod(ctx, &pod)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-			sidekick.Status.Leader.Name = ""
-			sidekick.Status.Pod = ""
-			sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
-			err = r.updateSidekickStatus(ctx, &sidekick)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{}, nil
-		}
-
-		// sidekick.Status.Leader.Name = ""
-		sidekick.Status.Pod = pod.Status.Phase
-		sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
-		err := r.updateSidekickStatus(ctx, &sidekick)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-	} else if !errors.IsNotFound(e2) {
-		return ctrl.Result{}, e2
-	}
-
-	// pod not exists, so create one
-
-	newPod, err := newSidekickPod(&sidekick, leader)
-	if err != nil {
+	err = r.Get(ctx, req.NamespacedName, &pod)
+	if err != nil && !errors.IsNotFound(err) {
 		return ctrl.Result{}, err
+	}
+	if err == nil {
+		return ctrl.Result{}, r.syncExistingPod(ctx, &sidekick, leader, &pod)
+	}
+	// Pod does not exist; create one for the current leader.
+	return ctrl.Result{}, r.createSidekickPod(ctx, &sidekick, leader)
+}
+
+// podNeedsRecreate reports whether the existing sidekick pod is stale and must
+// be deleted so a fresh one can be created.
+func podNeedsRecreate(sidekick *appsv1alpha1.Sidekick, leader, pod *corev1.Pod) bool {
+	return pod.Annotations[keyHash] != meta.GenerationHash(sidekick) ||
+		pod.Annotations[keyLeader] != leader.Name ||
+		pod.Spec.NodeName != leader.Spec.NodeName ||
+		(pod.Status.Phase == corev1.PodFailed && sidekick.Spec.RestartPolicy == corev1.RestartPolicyNever)
+}
+
+// deletePodAndResetStatus deletes the sidekick pod and clears the leader and
+// pod references from status.
+func (r *SidekickReconciler) deletePodAndResetStatus(ctx context.Context, sidekick *appsv1alpha1.Sidekick, pod *corev1.Pod) error {
+	if err := r.deletePod(ctx, pod); err != nil {
+		return err
+	}
+	sidekick.Status.Leader.Name = ""
+	sidekick.Status.Pod = ""
+	sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
+	return r.updateSidekickStatus(ctx, sidekick)
+}
+
+// syncExistingPod reconciles an already-existing sidekick pod: recreates it if
+// stale, otherwise records its phase in status.
+func (r *SidekickReconciler) syncExistingPod(ctx context.Context, sidekick *appsv1alpha1.Sidekick, leader, pod *corev1.Pod) error {
+	if podNeedsRecreate(sidekick, leader, pod) {
+		if leader.Spec.NodeName != pod.Spec.NodeName && pod.Spec.NodeName != "" {
+			sidekick.Status.FailureCount[string(pod.GetUID())] = true
+		}
+		return r.deletePodAndResetStatus(ctx, sidekick, pod)
+	}
+	sidekick.Status.Pod = pod.Status.Phase
+	sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
+	return r.updateSidekickStatus(ctx, sidekick)
+}
+
+// createSidekickPod builds the sidekick pod, creates it with the operator
+// finalizer attached, and records the new leader in status.
+func (r *SidekickReconciler) createSidekickPod(ctx context.Context, sidekick *appsv1alpha1.Sidekick, leader *corev1.Pod) error {
+	pod, err := newSidekickPod(sidekick, leader)
+	if err != nil {
+		return err
 	}
 	// Adding finalizer to pod because when user will delete this pod using
 	// kubectl delete, then pod will be gracefully terminated which will led
 	// to pod.status.phase: succeeded. We need to control this behaviour.
 	// By adding finalizer, we will know who is deleting the object
-	_, e3 := cu.CreateOrPatch(ctx, r.Client, newPod,
+	_, err = cu.CreateOrPatch(ctx, r.Client, pod,
 		func(in client.Object, createOp bool) client.Object {
-			po := in.(*corev1.Pod)
-			po.ObjectMeta = core_util.AddFinalizer(po.ObjectMeta, getFinalizerName())
-			return po
+			p := in.(*corev1.Pod)
+			p.ObjectMeta = core_util.AddFinalizer(p.ObjectMeta, getFinalizerName())
+			return p
 		},
 	)
-
-	if e3 != nil {
-		return ctrl.Result{}, e3
+	if err != nil {
+		return err
 	}
 
 	sidekick.Status.Leader.Name = leader.Name
-	sidekick.Status.Pod = newPod.Status.Phase
+	sidekick.Status.Pod = pod.Status.Phase
 	sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
-	err = r.updateSidekickStatus(ctx, &sidekick)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{}, nil
+	return r.updateSidekickStatus(ctx, sidekick)
 }
 
 var re = regexp.MustCompile(`.*-(\d+)`)
