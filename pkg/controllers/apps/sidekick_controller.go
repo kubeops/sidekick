@@ -18,7 +18,6 @@ package apps
 
 import (
 	"context"
-	"fmt"
 	"regexp"
 	"sort"
 	"strconv"
@@ -33,7 +32,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/ptr"
 	cu "kmodules.xyz/client-go/client"
 	core_util "kmodules.xyz/client-go/core/v1"
 	"kmodules.xyz/client-go/meta"
@@ -181,92 +179,15 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// pod not exists, so create one
 
-	o1 := metav1.NewControllerRef(&sidekick, appsv1alpha1.SchemeGroupVersion.WithKind("Sidekick"))
-	o2 := metav1.NewControllerRef(leader, corev1.SchemeGroupVersion.WithKind("Pod"))
-	o2.Controller = ptr.To(false)
-	o2.BlockOwnerDeletion = ptr.To(false)
-	pod = corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            sidekick.Name,
-			Namespace:       sidekick.Namespace,
-			Annotations:     sidekick.Annotations,
-			Labels:          sidekick.Labels,
-			OwnerReferences: []metav1.OwnerReference{*o1, *o2},
-		},
-		Spec: corev1.PodSpec{
-			Volumes:                       listVolumes(leader, sidekick), // leader
-			InitContainers:                make([]corev1.Container, 0, len(sidekick.Spec.InitContainers)),
-			Containers:                    make([]corev1.Container, 0, len(sidekick.Spec.Containers)),
-			EphemeralContainers:           sidekick.Spec.EphemeralContainers,
-			RestartPolicy:                 sidekick.Spec.RestartPolicy,
-			TerminationGracePeriodSeconds: sidekick.Spec.TerminationGracePeriodSeconds,
-			ActiveDeadlineSeconds:         sidekick.Spec.ActiveDeadlineSeconds,
-			DNSPolicy:                     sidekick.Spec.DNSPolicy,
-			// NodeSelector:                  sidekick.Spec.NodeSelector,
-			ServiceAccountName:           sidekick.Spec.ServiceAccountName,
-			DeprecatedServiceAccount:     sidekick.Spec.DeprecatedServiceAccount,
-			AutomountServiceAccountToken: sidekick.Spec.AutomountServiceAccountToken,
-			NodeName:                     leader.Spec.NodeName, // leader
-			HostNetwork:                  sidekick.Spec.HostNetwork,
-			HostPID:                      sidekick.Spec.HostPID,
-			HostIPC:                      sidekick.Spec.HostIPC,
-			ShareProcessNamespace:        sidekick.Spec.ShareProcessNamespace,
-			SecurityContext:              sidekick.Spec.SecurityContext,
-			ImagePullSecrets:             sidekick.Spec.ImagePullSecrets,
-			Hostname:                     sidekick.Spec.Hostname,
-			Subdomain:                    sidekick.Spec.Subdomain,
-			Affinity:                     sidekick.Spec.Affinity,
-			SchedulerName:                sidekick.Spec.SchedulerName,
-			Tolerations:                  sidekick.Spec.Tolerations,
-			HostAliases:                  sidekick.Spec.HostAliases,
-			PriorityClassName:            sidekick.Spec.PriorityClassName,
-			Priority:                     sidekick.Spec.Priority,
-			DNSConfig:                    sidekick.Spec.DNSConfig,
-			ReadinessGates:               sidekick.Spec.ReadinessGates,
-			RuntimeClassName:             sidekick.Spec.RuntimeClassName,
-			EnableServiceLinks:           sidekick.Spec.EnableServiceLinks,
-			PreemptionPolicy:             sidekick.Spec.PreemptionPolicy,
-			Overhead:                     sidekick.Spec.Overhead,
-			TopologySpreadConstraints:    sidekick.Spec.TopologySpreadConstraints,
-			SetHostnameAsFQDN:            sidekick.Spec.SetHostnameAsFQDN,
-			OS:                           sidekick.Spec.OS,
-			HostUsers:                    sidekick.Spec.HostUsers,
-		},
-	}
-
-	if pod.Annotations == nil {
-		pod.Annotations = make(map[string]string)
-	}
-	// Do not alter the assign order
-	pod.Annotations[keyHash] = meta.GenerationHash(&sidekick)
-	pod.Annotations[keyLeader] = leader.Name
-	for _, c := range sidekick.Spec.Containers {
-		c2, err := convContainer(leader, c)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if c2.Env == nil {
-			c2.Env = make([]corev1.EnvVar, 0)
-		}
-		c2.Env = append(c2.Env, corev1.EnvVar{
-			Name:  "LEADER_NAME",
-			Value: leader.Name,
-		})
-		pod.Spec.Containers = append(pod.Spec.Containers, *c2)
-
-	}
-	for _, c := range sidekick.Spec.InitContainers {
-		c2, err := convContainer(leader, c)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		pod.Spec.InitContainers = append(pod.Spec.InitContainers, *c2)
+	newPod, err := newSidekickPod(&sidekick, leader)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 	// Adding finalizer to pod because when user will delete this pod using
 	// kubectl delete, then pod will be gracefully terminated which will led
 	// to pod.status.phase: succeeded. We need to control this behaviour.
 	// By adding finalizer, we will know who is deleting the object
-	_, e3 := cu.CreateOrPatch(ctx, r.Client, &pod,
+	_, e3 := cu.CreateOrPatch(ctx, r.Client, newPod,
 		func(in client.Object, createOp bool) client.Object {
 			po := in.(*corev1.Pod)
 			po.ObjectMeta = core_util.AddFinalizer(po.ObjectMeta, getFinalizerName())
@@ -279,102 +200,13 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	sidekick.Status.Leader.Name = leader.Name
-	sidekick.Status.Pod = pod.Status.Phase
+	sidekick.Status.Pod = newPod.Status.Phase
 	sidekick.Status.ObservedGeneration = sidekick.GetGeneration()
 	err = r.updateSidekickStatus(ctx, &sidekick)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
-}
-
-func convContainer(leader *corev1.Pod, c appsv1alpha1.Container) (*corev1.Container, error) {
-	c2 := corev1.Container{
-		Name:                     c.Name,
-		Image:                    c.Image,
-		Command:                  c.Command,
-		Args:                     c.Args,
-		WorkingDir:               c.WorkingDir,
-		Ports:                    c.Ports,
-		EnvFrom:                  c.EnvFrom,
-		Env:                      c.Env,
-		Resources:                c.Resources,
-		VolumeMounts:             make([]corev1.VolumeMount, 0, len(c.VolumeMounts)),
-		VolumeDevices:            c.VolumeDevices,
-		LivenessProbe:            c.LivenessProbe,
-		ReadinessProbe:           c.ReadinessProbe,
-		StartupProbe:             c.StartupProbe,
-		Lifecycle:                c.Lifecycle,
-		TerminationMessagePath:   c.TerminationMessagePath,
-		TerminationMessagePolicy: c.TerminationMessagePolicy,
-		ImagePullPolicy:          c.ImagePullPolicy,
-		SecurityContext:          c.SecurityContext,
-		Stdin:                    c.Stdin,
-		StdinOnce:                c.StdinOnce,
-		TTY:                      c.TTY,
-	}
-	for _, vm := range c.VolumeMounts {
-		empty := !vm.ReadOnly &&
-			vm.MountPath == "" &&
-			vm.SubPath == "" &&
-			vm.MountPropagation == nil &&
-			vm.SubPathExpr == ""
-		if empty {
-			if v2 := findMount(leader, vm.Name); v2 == nil {
-				return nil, fmt.Errorf("missing volume mount %s for leader %s/%s", vm.Name, leader.Namespace, leader.Name)
-			} else {
-				c2.VolumeMounts = append(c2.VolumeMounts, *v2)
-			}
-		} else {
-			v2 := corev1.VolumeMount{
-				Name:             vm.Name,
-				ReadOnly:         vm.ReadOnly,
-				MountPath:        vm.MountPath,
-				SubPath:          vm.SubPath,
-				MountPropagation: vm.MountPropagation,
-				SubPathExpr:      vm.SubPathExpr,
-			}
-			c2.VolumeMounts = append(c2.VolumeMounts, v2)
-		}
-	}
-
-	return &c2, nil
-}
-
-func findMount(leader *corev1.Pod, name string) *corev1.VolumeMount {
-	for _, c := range leader.Spec.Containers {
-		for _, vm := range c.VolumeMounts {
-			if vm.Name == name {
-				return &vm
-			}
-		}
-	}
-	for _, c := range leader.Spec.InitContainers {
-		for _, vm := range c.VolumeMounts {
-			if vm.Name == name {
-				return &vm
-			}
-		}
-	}
-	return nil
-}
-
-func listVolumes(leader *corev1.Pod, sidekick appsv1alpha1.Sidekick) []corev1.Volume {
-	vols := make([]corev1.Volume, 0)
-	vols = core_util.UpsertVolume(vols, sidekick.Spec.Volumes...)
-	for _, c := range sidekick.Spec.Containers {
-		if len(c.VolumeMounts) > 0 {
-			vols = core_util.UpsertVolume(vols, leader.Spec.Volumes...)
-			return vols
-		}
-	}
-	for _, c := range sidekick.Spec.InitContainers {
-		if len(c.VolumeMounts) > 0 {
-			vols = core_util.UpsertVolume(vols, leader.Spec.Volumes...)
-			return vols
-		}
-	}
-	return nil
 }
 
 var re = regexp.MustCompile(`.*-(\d+)`)
