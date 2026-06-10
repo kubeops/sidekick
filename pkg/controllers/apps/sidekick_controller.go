@@ -65,10 +65,6 @@ type SidekickReconciler struct {
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the Sidekick object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.13.0/pkg/reconcile
@@ -203,6 +199,7 @@ func (r *SidekickReconciler) createSidekickPod(ctx context.Context, sidekick *ap
 	return r.updateSidekickStatus(ctx, sidekick)
 }
 
+// re extracts the trailing ordinal from StatefulSet-style pod names, e.g. "db-2" -> 2.
 var re = regexp.MustCompile(`.*-(\d+)`)
 
 func (r *SidekickReconciler) getLeader(ctx context.Context, sidekick appsv1alpha1.Sidekick) (*corev1.Pod, error) {
@@ -269,9 +266,9 @@ func (r *SidekickReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			return nil
 		}
 		var req []reconcile.Request
-		for _, c := range sidekicks.Items {
-			if c.Status.Leader.Name == a.GetName() {
-				req = append(req, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&c)})
+		for _, sk := range sidekicks.Items {
+			if sk.Status.Leader.Name == a.GetName() {
+				req = append(req, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&sk)})
 			}
 		}
 		return req
@@ -286,9 +283,9 @@ func (r *SidekickReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			return nil
 		}
 		var req []reconcile.Request
-		for _, c := range sidekicks.Items {
-			if c.Name == a.GetName() {
-				req = append(req, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&c)})
+		for _, sk := range sidekicks.Items {
+			if sk.Name == a.GetName() {
+				req = append(req, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&sk)})
 			}
 		}
 		return req

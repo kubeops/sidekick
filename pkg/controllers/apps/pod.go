@@ -84,9 +84,9 @@ func (r *SidekickReconciler) removePodFinalizerIfMarkedForDeletion(ctx context.C
 func (r *SidekickReconciler) removePodFinalizer(ctx context.Context, pod *corev1.Pod) error {
 	_, err := cu.CreateOrPatch(ctx, r.Client, pod,
 		func(in client.Object, createOp bool) client.Object {
-			po := in.(*corev1.Pod)
-			po.ObjectMeta = core_util.RemoveFinalizer(po.ObjectMeta, getFinalizerName())
-			return po
+			pod := in.(*corev1.Pod)
+			pod.ObjectMeta = core_util.RemoveFinalizer(pod.ObjectMeta, getFinalizerName())
+			return pod
 		},
 	)
 	return client.IgnoreNotFound(err)
@@ -103,12 +103,12 @@ func (r *SidekickReconciler) deletePod(ctx context.Context, pod *corev1.Pod) err
 func (r *SidekickReconciler) setDeletionInitiatorAnnotation(ctx context.Context, pod *corev1.Pod) error {
 	_, err := cu.CreateOrPatch(ctx, r.Client, pod,
 		func(in client.Object, createOp bool) client.Object {
-			po := in.(*corev1.Pod)
-			if po.Annotations == nil {
-				po.Annotations = make(map[string]string)
+			pod := in.(*corev1.Pod)
+			if pod.Annotations == nil {
+				pod.Annotations = make(map[string]string)
 			}
-			po.Annotations[deletionInitiatorKey] = deletionInitiatesBySidekickOperator
-			return po
+			pod.Annotations[deletionInitiatorKey] = deletionInitiatesBySidekickOperator
+			return pod
 		},
 	)
 	return err
