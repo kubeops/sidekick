@@ -652,6 +652,9 @@ func (r *SidekickReconciler) getDistributedSidekickPhase(sidekick *appsv1alpha1.
 	// if restartPolicy is always, we will always try to keep a pod running
 	// if pod.status.phase == failed, then we will start a new pod
 	if sidekick.Spec.RestartPolicy == corev1.RestartPolicyAlways {
+		if !isDistributedSidekickPodRunning(mw) {
+			return appsv1alpha1.SideKickPhaseDegraded
+		}
 		return appsv1alpha1.SideKickPhaseCurrent
 	}
 	if sidekick.Status.Phase == appsv1alpha1.SidekickPhaseSucceeded {
@@ -683,7 +686,27 @@ func (r *SidekickReconciler) getDistributedSidekickPhase(sidekick *appsv1alpha1.
 	if backOffCounts > *sidekick.Spec.BackoffLimit {
 		return appsv1alpha1.SideKickPhaseFailed
 	}
+	if !isDistributedSidekickPodRunning(mw) {
+		return appsv1alpha1.SideKickPhaseDegraded
+	}
 	return appsv1alpha1.SideKickPhaseCurrent
+}
+
+// isDistributedSidekickPodRunning reports whether the ManifestWork feedback
+// shows the sidekick pod in Running phase. Container-level state is not
+// available via ManifestWork feedback, so pod phase is the only signal.
+func isDistributedSidekickPodRunning(mw *apiworkv1.ManifestWork) bool {
+	if mw == nil || mw.DeletionTimestamp != nil {
+		return false
+	}
+	for _, manifestStatus := range mw.Status.ResourceStatus.Manifests {
+		for _, value := range manifestStatus.StatusFeedbacks.Values {
+			if value.Name == "PodPhase" && value.Value.String != nil {
+				return *value.Value.String == string(corev1.PodRunning)
+			}
+		}
+	}
+	return false
 }
 
 func (r *SidekickReconciler) getDistributedPodNamespace(ctx context.Context, mwName string) (string, error) {
