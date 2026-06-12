@@ -123,6 +123,9 @@ func (r *SidekickReconciler) getSidekickPhase(sidekick *appsv1alpha1.Sidekick, p
 	// if pod.status.phase == failed, then we will start a new pod
 	// TODO: which of these two should come first?
 	if sidekick.Spec.RestartPolicy == corev1.RestartPolicyAlways {
+		if !isSidekickPodRunning(pod) {
+			return appsv1alpha1.SideKickPhaseDegraded
+		}
 		return appsv1alpha1.SideKickPhaseCurrent
 	}
 	if sidekick.Status.Phase == appsv1alpha1.SidekickPhaseSucceeded {
@@ -144,7 +147,28 @@ func (r *SidekickReconciler) getSidekickPhase(sidekick *appsv1alpha1.Sidekick, p
 	if backOffCounts > *sidekick.Spec.BackoffLimit {
 		return appsv1alpha1.SideKickPhaseFailed
 	}
+	if !isSidekickPodRunning(pod) {
+		return appsv1alpha1.SideKickPhaseDegraded
+	}
 	return appsv1alpha1.SideKickPhaseCurrent
+}
+
+// isSidekickPodRunning reports whether the sidekick pod exists, is not being
+// deleted, is in Running phase and all its containers are actually running
+// (a pod stuck in CrashLoopBackOff stays in Running phase with waiting containers).
+func isSidekickPodRunning(pod *corev1.Pod) bool {
+	if pod == nil || pod.GetUID() == "" || pod.DeletionTimestamp != nil {
+		return false
+	}
+	if pod.Status.Phase != corev1.PodRunning {
+		return false
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Running == nil {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *SidekickReconciler) updateSidekickStatus(ctx context.Context, sidekick *appsv1alpha1.Sidekick) error {
