@@ -7,12 +7,11 @@
 package protogen
 
 import (
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
-
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -25,8 +24,8 @@ const (
 // CommandRequest defines the command to execute and authentication key.
 type CommandRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Command       string                 `protobuf:"bytes,1,opt,name=command,proto3" json:"command,omitempty"` // The command to run (e.g., "cat /scripts/seqno").
-	Data          []byte                 `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`       // backup job.
+	Command       string                 `protobuf:"bytes,1,opt,name=command,proto3" json:"command,omitempty"` // The command to run (e.g., "UpdateSnapshot").
+	Data          []byte                 `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -79,7 +78,7 @@ func (x *CommandRequest) GetData() []byte {
 type CommandResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"` // "success" or "error".
-	Output        []byte                 `protobuf:"bytes,2,opt,name=output,proto3" json:"output,omitempty"` // Integer output of the command (e.g., contents of /scripts/seqno).
+	Output        []byte                 `protobuf:"bytes,2,opt,name=output,proto3" json:"output,omitempty"` // Integer output of the command (e.g., UpdateSnapshot).
 	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`   // Error message, if any.
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

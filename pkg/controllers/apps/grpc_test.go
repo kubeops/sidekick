@@ -21,9 +21,8 @@ import (
 	"net"
 	"testing"
 
-	"kubedb.dev/apimachinery/pkg/utils/grpc/sidekick/protogen"
-
 	"google.golang.org/grpc"
+	"kubedb.dev/apimachinery/pkg/utils/grpc/sidekick/protogen"
 )
 
 // startTestServer spins up a CommandService server on a random local port and
@@ -50,7 +49,7 @@ func TestSendCommand_ValidToken(t *testing.T) {
 	defer stop()
 
 	payload := []byte(`{"seqno": 42}`)
-	resp, err := SendCommand(context.Background(), addr, secret, "Sidekick", "demo", "cat /scripts/seqno", payload)
+	resp, err := SendCommand(context.Background(), addr, secret, "Sidekick", "demo", CommandUpdateSnapshot, payload)
 	if err != nil {
 		t.Fatalf("SendCommand returned error: %v", err)
 	}
@@ -62,12 +61,26 @@ func TestSendCommand_ValidToken(t *testing.T) {
 	}
 }
 
+func TestSendCommand_UnknownCommand(t *testing.T) {
+	const secret = "super-secret-signing-key"
+	addr, stop := startTestServer(t, secret)
+	defer stop()
+
+	resp, err := SendCommand(context.Background(), addr, secret, "Sidekick", "demo", "bogus", []byte("x"))
+	if err != nil {
+		t.Fatalf("SendCommand returned transport error: %v", err)
+	}
+	if resp.GetStatus() != "error" {
+		t.Fatalf("expected status error for unknown command, got %q", resp.GetStatus())
+	}
+}
+
 func TestSendCommand_WrongSecret(t *testing.T) {
 	addr, stop := startTestServer(t, "server-secret")
 	defer stop()
 
 	// Client signs with a different secret -> server must reject the token.
-	resp, err := SendCommand(context.Background(), addr, "client-secret", "Sidekick", "demo", "noop", []byte("x"))
+	resp, err := SendCommand(context.Background(), addr, "client-secret", "Sidekick", "demo", CommandUpdateSnapshot, []byte("x"))
 	if err != nil {
 		t.Fatalf("SendCommand returned transport error: %v", err)
 	}
@@ -76,24 +89,24 @@ func TestSendCommand_WrongSecret(t *testing.T) {
 	}
 }
 
-func TestGenerateAndVerifyToken(t *testing.T) {
-	const secret = "k8s-jwt-secret"
+func TestGenerateAndDecryptToken(t *testing.T) {
+	const secret = "47094817-de7f-4120-baf4-c2b6e5ee5d46"
 
 	token, err := GenerateToken(secret, "Sidekick", "my-sidekick")
 	if err != nil {
 		t.Fatalf("GenerateToken error: %v", err)
 	}
 
-	claims, err := VerifyToken(secret, token)
+	claims, err := DecryptToken(secret, token)
 	if err != nil {
-		t.Fatalf("VerifyToken error: %v", err)
+		t.Fatalf("DecryptToken error: %v", err)
 	}
 	if claims.Kind != "Sidekick" || claims.Name != "my-sidekick" {
 		t.Fatalf("unexpected claims: %+v", claims)
 	}
 
-	// Tampering with the secret must fail verification.
-	if _, err := VerifyToken("other-secret", token); err == nil {
-		t.Fatal("expected verification to fail with wrong secret")
+	// A wrong secret must fail to decrypt.
+	if _, err := DecryptToken("other-secret", token); err == nil {
+		t.Fatal("expected decryption to fail with wrong secret")
 	}
 }

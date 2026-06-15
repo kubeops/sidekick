@@ -17,112 +17,105 @@ limitations under the License.
 package apps
 
 import (
-	"crypto/hmac"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
-	"time"
+	"io"
 )
 
-// SidekickClaims is the payload carried inside a token. It identifies the
-// Kubernetes object (Kind/Name) a token was minted for.
+// SidekickClaims is the payload that gets encrypted into a token. It identifies
+// the Kubernetes object (Kind/Name) a token was minted for. There is no expiry.
 type SidekickClaims struct {
 	Kind string `json:"kind"`
 	Name string `json:"name"`
-	// IssuedAt is the unix timestamp (seconds) at which the token was created.
-	IssuedAt int64 `json:"iat"`
-	// ExpiresAt is the unix timestamp (seconds) after which the token is invalid.
-	// A zero value means the token never expires.
-	ExpiresAt int64 `json:"exp,omitempty"`
 }
 
-// jwtHeader is the fixed header for an HS256 signed token.
-type jwtHeader struct {
-	Alg string `json:"alg"`
-	Typ string `json:"typ"`
-}
-
-// DefaultTokenValidity is how long a generated token stays valid.
-const DefaultTokenValidity = time.Hour
-
-// b64 is the URL-safe, unpadded base64 encoding used by JWT.
+// b64 is the URL-safe, unpadded base64 encoding used to wrap the ciphertext.
 var b64 = base64.RawURLEncoding
 
-// GenerateToken creates a signed JWT (HS256) for the given kind/name using the
-// provided secret. The returned token can later be checked with VerifyToken
-// using the same secret.
+// deriveKey turns an arbitrary-length secret into a fixed 32-byte AES-256 key.
+func deriveKey(secret string) []byte {
+	sum := sha256.Sum256([]byte(secret))
+	return sum[:]
+}
+
+// GenerateToken encrypts the given kind/name with the provided secret using
+// AES-256-GCM and returns the result as a base64url string. The same secret is
+// required to recover the claims via DecryptToken.
 func GenerateToken(secret, kind, name string) (string, error) {
-	now := time.Now()
-	claims := SidekickClaims{
-		Kind:      kind,
-		Name:      name,
-		IssuedAt:  now.Unix(),
-		ExpiresAt: now.Add(DefaultTokenValidity).Unix(),
+	if secret == "" {
+		return "", errors.New("token: secret must not be empty")
 	}
-	return signToken(secret, claims)
+
+	plaintext, err := json.Marshal(SidekickClaims{Kind: kind, Name: name})
+	if err != nil {
+		return "", fmt.Errorf("token: marshal claims: %w", err)
+	}
+
+	gcm, err := newGCM(secret)
+	if err != nil {
+		return "", err
+	}
+
+	// A fresh random nonce per token; prepended to the ciphertext.
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", fmt.Errorf("token: read nonce: %w", err)
+	}
+
+	sealed := gcm.Seal(nonce, nonce, plaintext, nil)
+	return b64.EncodeToString(sealed), nil
 }
 
-func signToken(secret string, claims SidekickClaims) (string, error) {
+// DecryptToken decrypts a token produced by GenerateToken using secret and
+// returns the claims it carries. GCM authenticates the ciphertext, so a wrong
+// secret or any tampering fails decryption.
+func DecryptToken(secret, token string) (*SidekickClaims, error) {
 	if secret == "" {
-		return "", errors.New("jwt: signing secret must not be empty")
+		return nil, errors.New("token: secret must not be empty")
 	}
 
-	headerJSON, err := json.Marshal(jwtHeader{Alg: "HS256", Typ: "JWT"})
+	sealed, err := b64.DecodeString(token)
 	if err != nil {
-		return "", fmt.Errorf("jwt: marshal header: %w", err)
+		return nil, fmt.Errorf("token: decode: %w", err)
 	}
-	claimsJSON, err := json.Marshal(claims)
+
+	gcm, err := newGCM(secret)
 	if err != nil {
-		return "", fmt.Errorf("jwt: marshal claims: %w", err)
+		return nil, err
 	}
 
-	signingInput := b64.EncodeToString(headerJSON) + "." + b64.EncodeToString(claimsJSON)
-	signature := sign(secret, signingInput)
-	return signingInput + "." + signature, nil
-}
-
-// VerifyToken validates the signature and expiry of a token and returns the
-// claims it carries. An error is returned if the token is malformed, the
-// signature does not match the secret, or the token has expired.
-func VerifyToken(secret, token string) (*SidekickClaims, error) {
-	if secret == "" {
-		return nil, errors.New("jwt: signing secret must not be empty")
+	if len(sealed) < gcm.NonceSize() {
+		return nil, errors.New("token: ciphertext too short")
 	}
+	nonce, ciphertext := sealed[:gcm.NonceSize()], sealed[gcm.NonceSize():]
 
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, errors.New("jwt: token must have three segments")
-	}
-
-	signingInput := parts[0] + "." + parts[1]
-	expected := sign(secret, signingInput)
-	// Constant-time compare to avoid timing attacks.
-	if !hmac.Equal([]byte(expected), []byte(parts[2])) {
-		return nil, errors.New("jwt: signature verification failed")
-	}
-
-	claimsJSON, err := b64.DecodeString(parts[1])
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		return nil, fmt.Errorf("jwt: decode claims: %w", err)
+		return nil, fmt.Errorf("token: decryption failed: %w", err)
 	}
+
 	var claims SidekickClaims
-	if err := json.Unmarshal(claimsJSON, &claims); err != nil {
-		return nil, fmt.Errorf("jwt: unmarshal claims: %w", err)
+	if err := json.Unmarshal(plaintext, &claims); err != nil {
+		return nil, fmt.Errorf("token: unmarshal claims: %w", err)
 	}
-
-	if claims.ExpiresAt != 0 && time.Now().Unix() > claims.ExpiresAt {
-		return nil, fmt.Errorf("jwt: token expired at %s", time.Unix(claims.ExpiresAt, 0))
-	}
-
 	return &claims, nil
 }
 
-// sign computes the base64url-encoded HMAC-SHA256 signature of input.
-func sign(secret, input string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(input))
-	return b64.EncodeToString(mac.Sum(nil))
+// newGCM builds an AES-256-GCM AEAD from the secret.
+func newGCM(secret string) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(deriveKey(secret))
+	if err != nil {
+		return nil, fmt.Errorf("token: new cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("token: new gcm: %w", err)
+	}
+	return gcm, nil
 }

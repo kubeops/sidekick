@@ -24,26 +24,31 @@ import (
 	"net"
 	"time"
 
-	sidekickgrpc "kubedb.dev/apimachinery/pkg/utils/grpc"
-	"kubedb.dev/apimachinery/pkg/utils/grpc/sidekick/protogen"
-
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	sidekickgrpc "kubedb.dev/apimachinery/pkg/utils/grpc"
+	"kubedb.dev/apimachinery/pkg/utils/grpc/sidekick/protogen"
+)
+
+// Commands understood by the CommandService server.
+const (
+	// CommandUpdateSnapshot updates the snapshot carried in the request data.
+	CommandUpdateSnapshot = "UpdateSnapshot"
 )
 
 // CommandServer implements protogen.CommandServiceServer. Every request carries
-// a JWT (inside the SnapShot envelope) that is verified against Secret before
-// the request payload is accepted.
+// an encrypted token (inside the SnapShot envelope) that is decrypted with
+// Secret before the request payload is accepted.
 type CommandServer struct {
 	protogen.UnimplementedCommandServiceServer
 
-	// Secret is the shared HMAC secret used to verify the JWT in each request.
+	// Secret is the shared secret used to decrypt the token in each request.
 	// It must match the secret passed to GenerateToken on the client side.
 	Secret string
 }
 
-// ExecuteCommand verifies the token shipped with the request and, on success,
-// prints the data carried in the request.
+// ExecuteCommand decrypts the token shipped with the request and, on success,
+// prints the decrypted claims and the data carried in the request.
 func (s *CommandServer) ExecuteCommand(_ context.Context, req *protogen.CommandRequest) (*protogen.CommandResponse, error) {
 	// The request data is a JSON-encoded SnapShot: {data, token}.
 	var snap sidekickgrpc.SnapShot
@@ -54,23 +59,32 @@ func (s *CommandServer) ExecuteCommand(_ context.Context, req *protogen.CommandR
 		}, nil
 	}
 
-	claims, err := VerifyToken(s.Secret, snap.Token)
+	claims, err := DecryptToken(s.Secret, snap.Token)
 	if err != nil {
 		return &protogen.CommandResponse{
 			Status: "error",
-			Error:  fmt.Sprintf("token verification failed: %v", err),
+			Error:  fmt.Sprintf("token decryption failed: %v", err),
 		}, nil
 	}
 
-	// Token is valid: print the command and the data we were passed.
-	log.Printf("[grpc] verified token for kind=%q name=%q", claims.Kind, claims.Name)
+	// Token decrypted: dispatch on the requested command.
+	log.Printf("[grpc] decrypted token for kind=%q name=%q", claims.Kind, claims.Name)
 	log.Printf("[grpc] command: %s", req.GetCommand())
-	log.Printf("[grpc] data: %s", string(snap.Data))
 
-	return &protogen.CommandResponse{
-		Status: "success",
-		Output: snap.Data,
-	}, nil
+	switch req.GetCommand() {
+	case CommandUpdateSnapshot:
+		// Print the snapshot data we were passed.
+		log.Printf("[grpc] UpdateSnapshot data: %s", string(snap.Data))
+		return &protogen.CommandResponse{
+			Status: "success",
+			Output: snap.Data,
+		}, nil
+	default:
+		return &protogen.CommandResponse{
+			Status: "error",
+			Error:  fmt.Sprintf("unknown command: %q", req.GetCommand()),
+		}, nil
+	}
 }
 
 // RunGRPCServer starts a CommandService gRPC server on addr (e.g. ":9090") and
