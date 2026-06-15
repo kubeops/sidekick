@@ -138,7 +138,6 @@ require (
 	k8s.io/apiextensions-apiserver v0.34.3 // indirect
 	k8s.io/apiserver v0.34.3 // indirect
 	k8s.io/component-base v0.34.3 // indirect
-	kubedb.dev/apimachinery v0.0.0-00010101000000-000000000000
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.33.0 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
@@ -152,5 +151,3 @@ replace github.com/Masterminds/sprig/v3 => github.com/gomodules/sprig/v3 v3.2.3-
 replace k8s.io/apiserver => github.com/kmodules/apiserver v0.34.4-0.20251227112449-07fa35efc6fc
 
 replace sigs.k8s.io/controller-runtime => github.com/kmodules/controller-runtime v0.22.5-0.20251227114913-f011264689cd
-
-replace kubedb.dev/apimachinery => /home/arman/go/src/kubedb.dev/apimachinery

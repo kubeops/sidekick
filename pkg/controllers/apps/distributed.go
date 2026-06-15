@@ -60,6 +60,17 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Start the gRPC server exactly once, decrypting tokens with this
+	// Sidekick's UID as the shared secret.
+	r.grpcOnce.Do(func() {
+		secret := string(sidekick.UID)
+		go func() {
+			if err := RunGRPCServer(secret, r.Client); err != nil {
+				klog.Errorf("GRPC Server failed: %v", err)
+			}
+		}()
+	})
+
 	err := r.handleDistributedSidekickFinalizer(ctx, &sidekick)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -184,6 +195,11 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 	annotation := sidekick.Annotations
 	for k, v := range leader.Annotations {
 		annotation[k] = v
+	}
+
+	err = r.setToken(&sidekick)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 
 	pod := corev1.Pod{
@@ -887,4 +903,50 @@ func (r *SidekickReconciler) terminateManifestWork(ctx context.Context, sidekick
 		},
 	)
 	return err
+}
+
+func (r *SidekickReconciler) setToken(sidekick *appsv1alpha1.Sidekick) error {
+	cont := getSidekickContainer(sidekick)
+	if cont == nil {
+		return fmt.Errorf("wal-g container not found")
+	}
+	snapShotName := ""
+	for _, env := range cont.Env {
+		if env.Name == "SNAPSHOT_NAME" {
+			snapShotName = env.Value
+			break
+		}
+	}
+	if snapShotName == "" {
+		return fmt.Errorf("no SNAPSHOT_NAME")
+	}
+
+	token, err := GenerateToken(string(sidekick.UID), snapShotName)
+	if err != nil {
+		return err
+	}
+	found := false
+	for i, env := range cont.Env {
+		if env.Name == "TOKEN" {
+			cont.Env[i].Value = token
+			found = true
+			break
+		}
+	}
+	if !found {
+		cont.Env = append(cont.Env, corev1.EnvVar{
+			Name:  "TOKEN",
+			Value: token,
+		})
+	}
+	return nil
+}
+
+func getSidekickContainer(sk *appsv1alpha1.Sidekick) *appsv1alpha1.Container {
+	for _, container := range sk.Spec.Containers {
+		if container.Name == "wal-g" {
+			return &container
+		}
+	}
+	return nil
 }

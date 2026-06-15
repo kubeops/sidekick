@@ -1227,10 +1227,6 @@ kmodules.xyz/client-go/client/apiutil
 kmodules.xyz/client-go/cluster
 kmodules.xyz/client-go/core/v1
 kmodules.xyz/client-go/meta
-# kubedb.dev/apimachinery v0.0.0-00010101000000-000000000000 => /home/arman/go/src/kubedb.dev/apimachinery
-## explicit; go 1.25.0
-kubedb.dev/apimachinery/pkg/utils/grpc
-kubedb.dev/apimachinery/pkg/utils/grpc/sidekick/protogen
 # open-cluster-management.io/api v1.2.0
 ## explicit; go 1.25.0
 open-cluster-management.io/api/client/work/clientset/versioned
@@ -1322,4 +1318,3 @@ sigs.k8s.io/yaml
 # github.com/Masterminds/sprig/v3 => github.com/gomodules/sprig/v3 v3.2.3-0.20220405051441-0a8a99bac1b8
 # k8s.io/apiserver => github.com/kmodules/apiserver v0.34.4-0.20251227112449-07fa35efc6fc
 # sigs.k8s.io/controller-runtime => github.com/kmodules/controller-runtime v0.22.5-0.20251227114913-f011264689cd
-# kubedb.dev/apimachinery => /home/arman/go/src/kubedb.dev/apimachinery

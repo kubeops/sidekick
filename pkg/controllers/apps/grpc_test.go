@@ -21,8 +21,9 @@ import (
 	"net"
 	"testing"
 
+	"kubeops.dev/sidekick/grpc/protogen"
+
 	"google.golang.org/grpc"
-	"kubedb.dev/apimachinery/pkg/utils/grpc/sidekick/protogen"
 )
 
 // startTestServer spins up a CommandService server on a random local port and
@@ -49,7 +50,7 @@ func TestSendCommand_ValidToken(t *testing.T) {
 	defer stop()
 
 	payload := []byte(`{"seqno": 42}`)
-	resp, err := SendCommand(context.Background(), addr, secret, "Sidekick", "demo", CommandUpdateSnapshot, payload)
+	resp, err := SendCommand(context.Background(), addr, secret, "demo", CommandUpdateSnapshot, payload)
 	if err != nil {
 		t.Fatalf("SendCommand returned error: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestSendCommand_UnknownCommand(t *testing.T) {
 	addr, stop := startTestServer(t, secret)
 	defer stop()
 
-	resp, err := SendCommand(context.Background(), addr, secret, "Sidekick", "demo", "bogus", []byte("x"))
+	resp, err := SendCommand(context.Background(), addr, secret, "demo", "bogus", []byte("x"))
 	if err != nil {
 		t.Fatalf("SendCommand returned transport error: %v", err)
 	}
@@ -80,7 +81,7 @@ func TestSendCommand_WrongSecret(t *testing.T) {
 	defer stop()
 
 	// Client signs with a different secret -> server must reject the token.
-	resp, err := SendCommand(context.Background(), addr, "client-secret", "Sidekick", "demo", CommandUpdateSnapshot, []byte("x"))
+	resp, err := SendCommand(context.Background(), addr, "client-secret", "demo", CommandUpdateSnapshot, []byte("x"))
 	if err != nil {
 		t.Fatalf("SendCommand returned transport error: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestSendCommand_WrongSecret(t *testing.T) {
 func TestGenerateAndDecryptToken(t *testing.T) {
 	const secret = "47094817-de7f-4120-baf4-c2b6e5ee5d46"
 
-	token, err := GenerateToken(secret, "Sidekick", "my-sidekick")
+	token, err := GenerateToken(secret, "my-sidekick")
 	if err != nil {
 		t.Fatalf("GenerateToken error: %v", err)
 	}
@@ -101,7 +102,7 @@ func TestGenerateAndDecryptToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecryptToken error: %v", err)
 	}
-	if claims.Kind != "Sidekick" || claims.Name != "my-sidekick" {
+	if claims.Name != "my-sidekick" {
 		t.Fatalf("unexpected claims: %+v", claims)
 	}
 

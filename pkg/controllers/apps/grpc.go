@@ -24,10 +24,19 @@ import (
 	"net"
 	"time"
 
+	appsv1alpha1 "kubeops.dev/sidekick/apis/apps/v1alpha1"
+	sidekickgrpc "kubeops.dev/sidekick/grpc"
+	"kubeops.dev/sidekick/grpc/protogen"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	sidekickgrpc "kubedb.dev/apimachinery/pkg/utils/grpc"
-	"kubedb.dev/apimachinery/pkg/utils/grpc/sidekick/protogen"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+const (
+	// grpcPort is the port the CommandService server listens on.
+	grpcPort = "50051"
 )
 
 // Commands understood by the CommandService server.
@@ -42,8 +51,13 @@ const (
 type CommandServer struct {
 	protogen.UnimplementedCommandServiceServer
 
-	// Secret is the shared secret used to decrypt the token in each request.
-	// It must match the secret passed to GenerateToken on the client side.
+	// KBClient talks to the Kubernetes API server for any work a command needs
+	// to perform (e.g. fetching or creating objects).
+	KBClient client.Client
+
+	// Secret is the shared secret (the Sidekick UID) used to decrypt the token
+	// in each request. It must match the secret passed to GenerateToken on the
+	// client side.
 	Secret string
 }
 
@@ -59,7 +73,19 @@ func (s *CommandServer) ExecuteCommand(_ context.Context, req *protogen.CommandR
 		}, nil
 	}
 
-	claims, err := DecryptToken(s.Secret, snap.Token)
+	var sidekick appsv1alpha1.Sidekick
+	if err := s.KBClient.Get(context.TODO(), types.NamespacedName{Namespace: snap.NameSpace, Name: snap.SidekickName}, &sidekick); err != nil {
+		// we'll ignore not-found errors, since they can't be fixed by an immediate
+		// requeue (we'll need to wait for a new notification), and we can get them
+		// on deleted requests.
+		return &protogen.CommandResponse{
+			Status: "error",
+			Error:  fmt.Sprintf("failed to get sidekick: %v", err),
+		}, nil
+	}
+	secret := string(sidekick.UID)
+
+	claims, err := DecryptToken(secret, snap.Token)
 	if err != nil {
 		return &protogen.CommandResponse{
 			Status: "error",
@@ -68,7 +94,7 @@ func (s *CommandServer) ExecuteCommand(_ context.Context, req *protogen.CommandR
 	}
 
 	// Token decrypted: dispatch on the requested command.
-	log.Printf("[grpc] decrypted token for kind=%q name=%q", claims.Kind, claims.Name)
+	log.Printf("[grpc] decrypted token for name=%q", claims.Name)
 	log.Printf("[grpc] command: %s", req.GetCommand())
 
 	switch req.GetCommand() {
@@ -87,27 +113,29 @@ func (s *CommandServer) ExecuteCommand(_ context.Context, req *protogen.CommandR
 	}
 }
 
-// RunGRPCServer starts a CommandService gRPC server on addr (e.g. ":9090") and
-// blocks until the server stops or the listener fails. Tokens are verified
-// against secret.
-func RunGRPCServer(addr, secret string) error {
-	lis, err := net.Listen("tcp", addr)
+// RunGRPCServer starts a CommandService gRPC server on :50051 and blocks until
+// the server stops or the listener fails. Tokens are decrypted against secret.
+func RunGRPCServer(secret string, kbClient client.Client) error {
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%v", grpcPort))
 	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", addr, err)
+		return fmt.Errorf("failed to listen on :%s: %w", grpcPort, err)
 	}
 
 	srv := grpc.NewServer()
-	protogen.RegisterCommandServiceServer(srv, &CommandServer{Secret: secret})
+	protogen.RegisterCommandServiceServer(srv, &CommandServer{
+		KBClient: kbClient,
+		Secret:   secret,
+	})
 
-	log.Printf("[grpc] CommandService listening on %s", addr)
+	log.Printf("[grpc] CommandService listening on :%s", grpcPort)
 	return srv.Serve(lis)
 }
 
 // SendCommand is a small client helper that mints a token for kind/name using
 // secret, wraps data + token in a SnapShot envelope, and calls ExecuteCommand
 // on the server at addr. It returns the server response.
-func SendCommand(ctx context.Context, addr, secret, kind, name, command string, data []byte) (*protogen.CommandResponse, error) {
-	token, err := GenerateToken(secret, kind, name)
+func SendCommand(ctx context.Context, addr, secret, name, command string, data []byte) (*protogen.CommandResponse, error) {
+	token, err := GenerateToken(secret, name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate token: %w", err)
 	}
@@ -126,12 +154,12 @@ func SendCommand(ctx context.Context, addr, secret, kind, name, command string, 
 	}
 	defer func() { _ = conn.Close() }()
 
-	client := protogen.NewCommandServiceClient(conn)
+	cmdClient := protogen.NewCommandServiceClient(conn)
 
 	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	return client.ExecuteCommand(callCtx, &protogen.CommandRequest{
+	return cmdClient.ExecuteCommand(callCtx, &protogen.CommandRequest{
 		Command: command,
 		Data:    envelope,
 	})

@@ -31,7 +31,6 @@ import (
 // SidekickClaims is the payload that gets encrypted into a token. It identifies
 // the Kubernetes object (Kind/Name) a token was minted for. There is no expiry.
 type SidekickClaims struct {
-	Kind string `json:"kind"`
 	Name string `json:"name"`
 }
 
@@ -47,12 +46,12 @@ func deriveKey(secret string) []byte {
 // GenerateToken encrypts the given kind/name with the provided secret using
 // AES-256-GCM and returns the result as a base64url string. The same secret is
 // required to recover the claims via DecryptToken.
-func GenerateToken(secret, kind, name string) (string, error) {
+func GenerateToken(secret, name string) (string, error) {
 	if secret == "" {
 		return "", errors.New("token: secret must not be empty")
 	}
 
-	plaintext, err := json.Marshal(SidekickClaims{Kind: kind, Name: name})
+	plaintext, err := json.Marshal(SidekickClaims{Name: name})
 	if err != nil {
 		return "", fmt.Errorf("token: marshal claims: %w", err)
 	}
