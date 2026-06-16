@@ -66,6 +66,8 @@ type SidekickReconciler struct {
 //+kubebuilder:rbac:groups=apps.k8s.appscode.com,resources=sidekicks,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps.k8s.appscode.com,resources=sidekicks/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=apps.k8s.appscode.com,resources=sidekicks/finalizers,verbs=update
+//+kubebuilder:rbac:groups=networking.kubeslice.io,resources=serviceexports,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.

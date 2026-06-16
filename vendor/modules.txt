@@ -22,6 +22,10 @@ github.com/cenkalti/backoff/v5
 # github.com/cespare/xxhash/v2 v2.3.0
 ## explicit; go 1.11
 github.com/cespare/xxhash/v2
+# github.com/cyphar/filepath-securejoin v0.6.1
+## explicit; go 1.18
+github.com/cyphar/filepath-securejoin
+github.com/cyphar/filepath-securejoin/internal/consts
 # github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 ## explicit
 github.com/davecgh/go-spew/spew
@@ -191,6 +195,12 @@ github.com/json-iterator/go
 # github.com/klauspost/cpuid/v2 v2.2.5
 ## explicit; go 1.15
 github.com/klauspost/cpuid/v2
+# github.com/kubeslice/apis v0.4.0
+## explicit; go 1.24.0
+github.com/kubeslice/apis/pkg/controller/v1alpha1
+# github.com/kubeslice/worker-operator v1.6.4
+## explicit; go 1.24.0
+github.com/kubeslice/worker-operator/api/v1beta1
 # github.com/mitchellh/mapstructure v1.5.0
 ## explicit; go 1.14
 github.com/mitchellh/mapstructure
@@ -203,8 +213,6 @@ github.com/modern-go/reflect2
 # github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822
 ## explicit
 github.com/munnerz/goautoneg
-# github.com/nxadm/tail v1.4.11
-## explicit; go 1.13
 # github.com/onsi/ginkgo/v2 v2.23.1
 ## explicit; go 1.23.0
 github.com/onsi/ginkgo/v2
@@ -504,6 +512,7 @@ gomodules.xyz/sets
 gomodules.xyz/wait
 # gomodules.xyz/x v0.0.17
 ## explicit; go 1.22.0
+gomodules.xyz/x/filepath
 gomodules.xyz/x/version
 # google.golang.org/genproto/googleapis/api v0.0.0-20251202230838-ff82c1b0f217
 ## explicit; go 1.24.0
@@ -1225,8 +1234,17 @@ kmodules.xyz/client-go/apiextensions/v1
 kmodules.xyz/client-go/client
 kmodules.xyz/client-go/client/apiutil
 kmodules.xyz/client-go/cluster
+kmodules.xyz/client-go/conditions
 kmodules.xyz/client-go/core/v1
 kmodules.xyz/client-go/meta
+# kmodules.xyz/offshoot-api v0.34.0
+## explicit; go 1.24.0
+kmodules.xyz/offshoot-api/api/v1
+# kubestash.dev/apimachinery v0.27.0
+## explicit; go 1.25.0
+kubestash.dev/apimachinery/apis
+kubestash.dev/apimachinery/apis/storage/v1alpha1
+kubestash.dev/apimachinery/crds
 # open-cluster-management.io/api v1.2.0
 ## explicit; go 1.25.0
 open-cluster-management.io/api/client/work/clientset/versioned
@@ -1253,6 +1271,8 @@ sigs.k8s.io/controller-runtime/pkg/certwatcher/metrics
 sigs.k8s.io/controller-runtime/pkg/client
 sigs.k8s.io/controller-runtime/pkg/client/apiutil
 sigs.k8s.io/controller-runtime/pkg/client/config
+sigs.k8s.io/controller-runtime/pkg/client/fake
+sigs.k8s.io/controller-runtime/pkg/client/interceptor
 sigs.k8s.io/controller-runtime/pkg/cluster
 sigs.k8s.io/controller-runtime/pkg/config
 sigs.k8s.io/controller-runtime/pkg/controller
@@ -1270,6 +1290,7 @@ sigs.k8s.io/controller-runtime/pkg/internal/flock
 sigs.k8s.io/controller-runtime/pkg/internal/httpserver
 sigs.k8s.io/controller-runtime/pkg/internal/log
 sigs.k8s.io/controller-runtime/pkg/internal/metrics
+sigs.k8s.io/controller-runtime/pkg/internal/objectutil
 sigs.k8s.io/controller-runtime/pkg/internal/recorder
 sigs.k8s.io/controller-runtime/pkg/internal/source
 sigs.k8s.io/controller-runtime/pkg/internal/syncs
@@ -1296,6 +1317,9 @@ sigs.k8s.io/controller-runtime/pkg/webhook/admission/metrics
 sigs.k8s.io/controller-runtime/pkg/webhook/conversion
 sigs.k8s.io/controller-runtime/pkg/webhook/conversion/metrics
 sigs.k8s.io/controller-runtime/pkg/webhook/internal/metrics
+# sigs.k8s.io/gateway-api v1.4.0
+## explicit; go 1.24.0
+sigs.k8s.io/gateway-api/apis/v1
 # sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730
 ## explicit; go 1.23
 sigs.k8s.io/json

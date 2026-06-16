@@ -17,12 +17,18 @@ limitations under the License.
 package apps
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
+
+	kubesliceapi "github.com/kubeslice/worker-operator/api/v1beta1"
 
 	appsv1alpha1 "kubeops.dev/sidekick/apis/apps/v1alpha1"
 
@@ -45,6 +51,22 @@ import (
 
 const (
 	ManifestWorkClusterNameLabel = "open-cluster-management.io/cluster-name"
+
+	// envSliceName is the wal-g container env var carrying the kubeslice slice name.
+	envSliceName = "SLICE_NAME"
+	// envPodName / envPodNamespace are downward-API env vars identifying the
+	// operator's own pod (which runs the gRPC server).
+	envPodName      = "POD_NAME"
+	envPodNamespace = "POD_NAMESPACE"
+	// envGRPCServerAddress is the wal-g container env var carrying the gRPC server's
+	// slice DNS address (set to the same value as the ServiceExport slice alias).
+	envGRPCServerAddress = "GRPC_SERVER_ADDRESS"
+
+	// grpcPortNumber is the gRPC CommandService port (see grpcPort in grpc.go).
+	grpcPortNumber int32 = 50051
+
+	// kubeSliceDomainSuffix is the DNS domain kubeslice serves exported services on.
+	kubeSliceDomainSuffix = "slice.local"
 )
 
 func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -69,6 +91,12 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 				klog.Errorf("GRPC Server failed: %v", err)
 			}
 		}()
+
+		// Expose the gRPC server on the kubeslice slice so wal-g sidecars in
+		// remote clusters can reach it.
+		if err := r.ensureServiceExport(ctx, &sidekick); err != nil {
+			klog.Errorf("failed to ensure ServiceExport for gRPC server: %v", err)
+		}
 	})
 
 	err := r.handleDistributedSidekickFinalizer(ctx, &sidekick)
@@ -198,6 +226,11 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 	}
 
 	err = r.setToken(&sidekick)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	err = r.setGRPCAddress(&sidekick)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -925,28 +958,207 @@ func (r *SidekickReconciler) setToken(sidekick *appsv1alpha1.Sidekick) error {
 	if err != nil {
 		return err
 	}
-	found := false
-	for i, env := range cont.Env {
-		if env.Name == "TOKEN" {
-			cont.Env[i].Value = token
-			found = true
-			break
-		}
+	setEnv(cont, "TOKEN", token)
+	return nil
+}
+
+// setGRPCAddress sets the kubeslice DNS address of the operator's gRPC server on
+// the wal-g container, so the sidecar can reach it across the slice. It must use
+// the same value advertised by the ServiceExport alias (see grpcSliceAddress).
+func (r *SidekickReconciler) setGRPCAddress(sidekick *appsv1alpha1.Sidekick) error {
+	cont := getSidekickContainer(sidekick)
+	if cont == nil {
+		return fmt.Errorf("wal-g container not found")
 	}
-	if !found {
-		cont.Env = append(cont.Env, corev1.EnvVar{
-			Name:  "TOKEN",
-			Value: token,
-		})
+	addr, err := grpcSliceAddress()
+	if err != nil {
+		return err
 	}
+	setEnv(cont, envGRPCServerAddress, addr)
 	return nil
 }
 
 func getSidekickContainer(sk *appsv1alpha1.Sidekick) *appsv1alpha1.Container {
-	for _, container := range sk.Spec.Containers {
-		if container.Name == "wal-g" {
-			return &container
+	for i := range sk.Spec.Containers {
+		if sk.Spec.Containers[i].Name == "wal-g" {
+			return &sk.Spec.Containers[i]
 		}
 	}
 	return nil
+}
+
+// setEnv upserts an env var on the container in place.
+func setEnv(cont *appsv1alpha1.Container, name, value string) {
+	for i := range cont.Env {
+		if cont.Env[i].Name == name {
+			cont.Env[i].Value = value
+			return
+		}
+	}
+	cont.Env = append(cont.Env, corev1.EnvVar{Name: name, Value: value})
+}
+
+var (
+	clusterDomain     string
+	clusterDomainOnce sync.Once
+)
+
+// findDomain resolves the cluster DNS domain (e.g. "cluster.local") from
+// /etc/resolv.conf, falling back to "cluster.local" on any error.
+func findDomain() string {
+	clusterDomainOnce.Do(func() {
+		d, err := resolveDomain()
+		if err != nil {
+			klog.Errorf("failed to find domain: %v", err)
+			d = "cluster.local"
+		}
+		clusterDomain = d
+	})
+	return clusterDomain
+}
+
+func resolveDomain() (string, error) {
+	const filePath = "/etc/resolv.conf"
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open %s: %v", filePath, err)
+	}
+	defer file.Close() //nolint:errcheck
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "search ") {
+			// search demo.svc.cluster.local svc.cluster.local cluster.local
+			for field := range strings.FieldsSeq(line) {
+				if strings.HasPrefix(field, "svc.") && !strings.HasPrefix(field, "svc.svc.") {
+					return strings.TrimPrefix(field, "svc."), nil
+				}
+			}
+			return "", fmt.Errorf("failed to find domain: %s", line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("error reading %s: %v", filePath, err)
+	}
+	return "", fmt.Errorf("no suitable domain found in %s", filePath)
+}
+
+// get Slice Name returns the kubeslice slice name the sidekick belongs to. It is
+// carried as an env var on the wal-g container (alongside SNAPSHOT_NAME).
+func getSliceName(sidekick *appsv1alpha1.Sidekick) (string, error) {
+	cont := getSidekickContainer(sidekick)
+	if cont == nil {
+		return "", fmt.Errorf("wal-g container not found")
+	}
+	for _, env := range cont.Env {
+		if env.Name == envSliceName {
+			return env.Value, nil
+		}
+	}
+	return "", fmt.Errorf("no %s env in wal-g container", envSliceName)
+}
+
+// sliceDNS returns the kubeslice DNS name a service exported on the slice is
+// reachable at, e.g. "kubedb-sidekick.<ns>.svc.slice.local".
+func sliceDNS(svcName, namespace string) string {
+	return fmt.Sprintf("%s.%s.svc.%s", svcName, namespace, kubeSliceDomainSuffix)
+}
+
+// grpcSliceAddress returns the slice DNS address of the operator's gRPC server,
+// derived from its own pod identity (POD_NAME/POD_NAMESPACE). wal-g sidecars in
+// remote clusters dial this address; it matches the ServiceExport slice alias.
+func grpcSliceAddress() (string, error) {
+	podName := os.Getenv(envPodName)
+	namespace := os.Getenv(envPodNamespace)
+	if podName == "" || namespace == "" {
+		return "", fmt.Errorf("%s/%s env not set; cannot derive gRPC slice address", envPodName, envPodNamespace)
+	}
+	return sliceDNS(deploymentNameForPod(podName), namespace), nil
+}
+
+// ensure ServiceExport creates/updates a kubeslice ServiceExport that exposes the
+// operator's gRPC CommandService (:50051) onto the slice. This lets the wal-g
+// sidecars running in remote (spoke) clusters reach the server over the slice
+// overlay network. The slice is taken from the wal-g container env; the export
+// selects the operator's own pod (which runs the gRPC server), discovered via
+// the downward-API POD_NAME/POD_NAMESPACE env vars.
+func (r *SidekickReconciler) ensureServiceExport(ctx context.Context, sidekick *appsv1alpha1.Sidekick) error {
+	sliceName, err := getSliceName(sidekick)
+	if err != nil {
+		return err
+	}
+
+	podName := os.Getenv(envPodName)
+	namespace := os.Getenv(envPodNamespace)
+	if podName == "" || namespace == "" {
+		return fmt.Errorf("%s/%s env not set; cannot locate gRPC server pod", envPodName, envPodNamespace)
+	}
+
+	var self corev1.Pod
+	if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: namespace}, &self); err != nil {
+		return fmt.Errorf("failed to get operator pod %s/%s: %w", namespace, podName, err)
+	}
+
+	// The operator pod is managed by a Deployment, so POD_NAME has the
+	// "<deployment>-<replicaset-hash>-<pod-suffix>" form. Strip the two generated
+	// suffixes to recover the Deployment name and use it as the exported service name.
+	svcName := deploymentNameForPod(podName)
+
+	export := &kubesliceapi.ServiceExport{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svcName,
+			Namespace: namespace,
+		},
+	}
+	_, err = cu.CreateOrPatch(ctx, r.Client, export, func(obj client.Object, createOp bool) client.Object {
+		in := obj.(*kubesliceapi.ServiceExport)
+		in.Spec.Slice = sliceName
+		in.Spec.Selector = &metav1.LabelSelector{MatchLabels: stableSelectorLabels(self.Labels)}
+		in.Spec.Aliases = []string{
+			fmt.Sprintf("%s.%s.svc.%s", svcName, namespace, findDomain()),
+			sliceDNS(svcName, namespace),
+		}
+		in.Spec.Ports = []kubesliceapi.ServicePort{
+			{
+				Name:          "grpc",
+				ContainerPort: grpcPortNumber,
+				Protocol:      corev1.ProtocolTCP,
+			},
+		}
+		return in
+	})
+	return err
+}
+
+// deploymentNameForPod recovers the Deployment name from a pod name by stripping
+// the ReplicaSet hash and pod suffix a Deployment appends to its pods
+// (e.g. "kubedb-sidekick-5f9d777f8f-rjvdq" -> "kubedb-sidekick").
+func deploymentNameForPod(podName string) string {
+	parts := strings.Split(podName, "-")
+	if len(parts) <= 2 {
+		return podName
+	}
+	return strings.Join(parts[:len(parts)-2], "-")
+}
+
+// stableSelectorLabels drops volatile, per-revision labels so the resulting
+// label selector keeps matching the operator pod across rollouts.
+func stableSelectorLabels(labels map[string]string) map[string]string {
+	volatile := map[string]bool{
+		"pod-template-hash":                  true,
+		"controller-revision-hash":           true,
+		"statefulset.kubernetes.io/pod-name": true,
+		"apps.kubernetes.io/pod-index":       true,
+	}
+	out := make(map[string]string, len(labels))
+	for k, v := range labels {
+		if !volatile[k] {
+			out[k] = v
+		}
+	}
+	return out
 }

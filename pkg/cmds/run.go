@@ -24,6 +24,7 @@ import (
 	appsv1alpha1 "kubeops.dev/sidekick/apis/apps/v1alpha1"
 	appscontrollers "kubeops.dev/sidekick/pkg/controllers/apps"
 
+	kubesliceapi "github.com/kubeslice/worker-operator/api/v1beta1"
 	"github.com/spf13/cobra"
 	v "gomodules.xyz/x/version"
 	core "k8s.io/api/core/v1"
@@ -55,6 +56,8 @@ func init() {
 	utilruntime.Must(appsv1alpha1.AddToScheme(scheme))
 	// Add ManifestWork (open-cluster-management) types so runtime can recognize them
 	utilruntime.Must(apiworkv1.Install(scheme))
+	// Add kubeslice ServiceExport types so the operator can expose the gRPC server on a slice
+	utilruntime.Must(kubesliceapi.AddToScheme(scheme))
 }
 
 func NewCmdRun() *cobra.Command {

@@ -24,6 +24,8 @@ import (
 	"net"
 	"time"
 
+	"k8s.io/klog/v2"
+
 	appsv1alpha1 "kubeops.dev/sidekick/apis/apps/v1alpha1"
 	sidekickgrpc "kubeops.dev/sidekick/grpc"
 	"kubeops.dev/sidekick/grpc/protogen"
@@ -99,11 +101,15 @@ func (s *CommandServer) ExecuteCommand(_ context.Context, req *protogen.CommandR
 
 	switch req.GetCommand() {
 	case CommandUpdateSnapshot:
+		err := s.UpdateSnapshot(claims.Name, sidekick.Namespace, snap.LogInfo)
+		if err != nil {
+			klog.Error(err)
+			return getError(err)
+		}
 		// Print the snapshot data we were passed.
-		log.Printf("[grpc] UpdateSnapshot data: %s", string(snap.Data))
+		log.Printf("[grpc] UpdateSnapshot data: %+v", snap.LogInfo)
 		return &protogen.CommandResponse{
 			Status: "success",
-			Output: snap.Data,
 		}, nil
 	default:
 		return &protogen.CommandResponse{
@@ -131,18 +137,27 @@ func RunGRPCServer(secret string, kbClient client.Client) error {
 	return srv.Serve(lis)
 }
 
-// SendCommand is a small client helper that mints a token for kind/name using
-// secret, wraps data + token in a SnapShot envelope, and calls ExecuteCommand
-// on the server at addr. It returns the server response.
+// SendCommand is a small client helper that mints a token for name using secret,
+// wraps the log info + token in a SnapShot envelope, and calls ExecuteCommand on
+// the server at addr. data is the JSON-encoded LogInfo payload. It returns the
+// server response.
 func SendCommand(ctx context.Context, addr, secret, name, command string, data []byte) (*protogen.CommandResponse, error) {
 	token, err := GenerateToken(secret, name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate token: %w", err)
 	}
 
+	var info sidekickgrpc.LogInfo
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &info); err != nil {
+			return nil, fmt.Errorf("failed to decode log info: %w", err)
+		}
+	}
+
 	envelope, err := json.Marshal(sidekickgrpc.SnapShot{
-		Data:  data,
-		Token: token,
+		SidekickName: name,
+		LogInfo:      info,
+		Token:        token,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal snapshot envelope: %w", err)
@@ -163,4 +178,11 @@ func SendCommand(ctx context.Context, addr, secret, name, command string, data [
 		Command: command,
 		Data:    envelope,
 	})
+}
+
+func getError(err error) (*protogen.CommandResponse, error) {
+	return &protogen.CommandResponse{
+		Status: "error",
+		Error:  err.Error(),
+	}, nil
 }
