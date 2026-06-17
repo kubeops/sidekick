@@ -984,6 +984,7 @@ func (r *SidekickReconciler) setGRPCAddress(sidekick *appsv1alpha1.Sidekick) err
 	if err != nil {
 		return err
 	}
+	addr = fmt.Sprintf("%s:%d", addr, grpcPortNumber)
 	setEnv(cont, envGRPCServerAddress, addr)
 	return nil
 }
@@ -1075,7 +1076,7 @@ func getSliceName(sidekick *appsv1alpha1.Sidekick) (string, error) {
 // sliceDNS returns the kubeslice DNS name a service exported on the slice is
 // reachable at, e.g. "kubedb-sidekick.<ns>.svc.slice.local".
 func sliceDNS(svcName, namespace string) string {
-	return fmt.Sprintf("%s.%s.svc.%s:%d", svcName, namespace, kubeSliceDomainSuffix, grpcPortNumber)
+	return fmt.Sprintf("%s.%s.svc.%s", svcName, namespace, kubeSliceDomainSuffix)
 }
 
 // grpcSliceAddress returns the slice DNS address of the operator's gRPC server,
