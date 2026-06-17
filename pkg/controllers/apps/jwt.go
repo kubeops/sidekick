@@ -19,13 +19,12 @@ package apps
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rand"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 )
 
 // SidekickClaims is the payload that gets encrypted into a token. It identifies
@@ -46,6 +45,13 @@ func deriveKey(secret string) []byte {
 // GenerateToken encrypts the given kind/name with the provided secret using
 // AES-256-GCM and returns the result as a base64url string. The same secret is
 // required to recover the claims via DecryptToken.
+//
+// The token is deterministic: the same (secret, name) always produces the
+// identical token. This is required because the operator re-mints the token on
+// every reconcile and writes it into the pod's TOKEN env; a non-deterministic
+// token would change the desired pod spec each reconcile and trigger a forbidden
+// update of the already-running pod. Determinism is achieved with a synthetic,
+// plaintext-derived nonce (SIV-style) instead of a random one.
 func GenerateToken(secret, name string) (string, error) {
 	if secret == "" {
 		return "", errors.New("token: secret must not be empty")
@@ -61,14 +67,25 @@ func GenerateToken(secret, name string) (string, error) {
 		return "", err
 	}
 
-	// A fresh random nonce per token; prepended to the ciphertext.
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", fmt.Errorf("token: read nonce: %w", err)
-	}
+	// Deterministic nonce derived from the plaintext, prepended to the ciphertext.
+	// Identical claims under the same secret intentionally map to the identical
+	// nonce (and thus the identical token); distinct claims get distinct nonces,
+	// so GCM nonce reuse across different plaintexts never happens.
+	nonce := deterministicNonce(secret, plaintext, gcm.NonceSize())
 
 	sealed := gcm.Seal(nonce, nonce, plaintext, nil)
 	return b64.EncodeToString(sealed), nil
+}
+
+// deterministicNonce derives a GCM nonce from the secret and plaintext via
+// HMAC-SHA256, making GenerateToken deterministic for identical inputs.
+func deterministicNonce(secret string, plaintext []byte, size int) []byte {
+	// Use a nonce-derivation key distinct from the AES key so the nonce HMAC
+	// never reuses the encryption key material.
+	keySum := sha256.Sum256([]byte("sidekick-token-nonce:" + secret))
+	mac := hmac.New(sha256.New, keySum[:])
+	mac.Write(plaintext)
+	return mac.Sum(nil)[:size]
 }
 
 // DecryptToken decrypts a token produced by GenerateToken using secret and

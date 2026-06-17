@@ -152,4 +152,24 @@ func TestGenerateAndDecryptToken(t *testing.T) {
 	if _, err := DecryptToken("other-secret", token); err == nil {
 		t.Fatal("expected decryption to fail with wrong secret")
 	}
+
+	// Token generation must be deterministic: the same (secret, name) must
+	// always yield the identical token, otherwise the operator re-mints it on
+	// every reconcile and triggers a forbidden update of the running pod.
+	token2, err := GenerateToken(secret, "my-sidekick")
+	if err != nil {
+		t.Fatalf("GenerateToken (second) error: %v", err)
+	}
+	if token != token2 {
+		t.Fatalf("token not deterministic:\n  first=%q\n second=%q", token, token2)
+	}
+
+	// Distinct claims must still produce distinct tokens (distinct nonces).
+	other, err := GenerateToken(secret, "different-sidekick")
+	if err != nil {
+		t.Fatalf("GenerateToken (other name) error: %v", err)
+	}
+	if other == token {
+		t.Fatal("distinct claims produced identical tokens")
+	}
 }

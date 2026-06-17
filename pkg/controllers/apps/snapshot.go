@@ -3,10 +3,12 @@ package apps
 import (
 	"context"
 	"fmt"
+
+	sidekickgrpc "kubeops.dev/sidekick/grpc"
+
 	"gomodules.xyz/pointer"
 	"k8s.io/klog/v2"
 	kmc "kmodules.xyz/client-go/client"
-	sidekickgrpc "kubeops.dev/sidekick/grpc"
 	storageapi "kubestash.dev/apimachinery/apis/storage/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )

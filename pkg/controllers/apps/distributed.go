@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"sort"
 	"strconv"
@@ -28,10 +29,9 @@ import (
 	"sync"
 	"time"
 
-	kubesliceapi "github.com/kubeslice/worker-operator/api/v1beta1"
-
 	appsv1alpha1 "kubeops.dev/sidekick/apis/apps/v1alpha1"
 
+	kubesliceapi "github.com/kubeslice/worker-operator/api/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -220,10 +220,15 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 
 	// pod not exists, so create one
 	o1 := metav1.NewControllerRef(&sidekick, appsv1alpha1.SchemeGroupVersion.WithKind("Sidekick"))
-	annotation := sidekick.Annotations
-	for k, v := range leader.Annotations {
-		annotation[k] = v
-	}
+	// Build the pod's annotations in a fresh map. Do NOT alias sidekick.Annotations
+	// here: aliasing merges the leader pod's annotations (kubeslice/nsm/ocm injection
+	// keys) into the Sidekick's own map, which then poisons meta.GenerationHash(&sidekick)
+	// at keyHash time. The next reconcile recomputes the expected hash from the clean
+	// Sidekick (without leader annotations), so the stored and expected hashes never
+	// match and the ManifestWork/pod is deleted and recreated forever.
+	annotation := make(map[string]string, len(sidekick.Annotations)+len(leader.Annotations))
+	maps.Copy(annotation, sidekick.Annotations)
+	maps.Copy(annotation, leader.Annotations)
 
 	err = r.setToken(&sidekick)
 	if err != nil {
@@ -760,26 +765,31 @@ func isDistributedSidekickPodRunning(mw *apiworkv1.ManifestWork) bool {
 
 func (r *SidekickReconciler) getDistributedPodNamespace(ctx context.Context, mwName string) (string, error) {
 	// Get all namespaces
-	var err error
 	var nsList corev1.NamespaceList
-	err = r.List(ctx, &nsList, &client.ListOptions{})
-	if err != nil {
+	if err := r.List(ctx, &nsList, &client.ListOptions{}); err != nil {
 		return "", err
 	}
-	namespace := ""
+	// notFound holds the last NotFound so callers that special-case it still see
+	// it when the ManifestWork exists in no namespace. It must NOT leak out once
+	// we actually find the ManifestWork: returning (namespace, NotFound) makes the
+	// caller skip its cached Get and re-run the pod-creation path on every reconcile,
+	// which re-mints the TOKEN env and triggers a forbidden update of the running pod.
+	var notFound error
 	for _, ns := range nsList.Items {
-		mw, err2 := r.OCMClient.WorkV1().ManifestWorks(ns.Name).Get(ctx, mwName, metav1.GetOptions{})
-		if err2 != nil && !errors.IsNotFound(err2) {
-			return "", err2
+		mw, err := r.OCMClient.WorkV1().ManifestWorks(ns.Name).Get(ctx, mwName, metav1.GetOptions{})
+		if err != nil {
+			if errors.IsNotFound(err) {
+				notFound = err
+				continue
+			}
+			return "", err
 		}
-		if err2 == nil && mw != nil {
-			namespace = mw.Namespace
-			break
+		if mw != nil {
+			return mw.Namespace, nil
 		}
-		err = err2
 	}
 
-	return namespace, err
+	return "", notFound
 }
 
 func (r *SidekickReconciler) deleteMW(ctx context.Context, mw *apiworkv1.ManifestWork) error {
@@ -1065,7 +1075,7 @@ func getSliceName(sidekick *appsv1alpha1.Sidekick) (string, error) {
 // sliceDNS returns the kubeslice DNS name a service exported on the slice is
 // reachable at, e.g. "kubedb-sidekick.<ns>.svc.slice.local".
 func sliceDNS(svcName, namespace string) string {
-	return fmt.Sprintf("%s.%s.svc.%s", svcName, namespace, kubeSliceDomainSuffix)
+	return fmt.Sprintf("%s.%s.svc.%s:%d", svcName, namespace, kubeSliceDomainSuffix, grpcPortNumber)
 }
 
 // grpcSliceAddress returns the slice DNS address of the operator's gRPC server,

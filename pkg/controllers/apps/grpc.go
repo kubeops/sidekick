@@ -20,11 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"time"
-
-	"k8s.io/klog/v2"
 
 	appsv1alpha1 "kubeops.dev/sidekick/apis/apps/v1alpha1"
 	sidekickgrpc "kubeops.dev/sidekick/grpc"
@@ -33,6 +30,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -96,8 +94,8 @@ func (s *CommandServer) ExecuteCommand(_ context.Context, req *protogen.CommandR
 	}
 
 	// Token decrypted: dispatch on the requested command.
-	log.Printf("[grpc] decrypted token for name=%q", claims.Name)
-	log.Printf("[grpc] command: %s", req.GetCommand())
+	klog.Infof("[grpc] decrypted token for sidekick %s is %q", sidekick.Name, claims.Name)
+	klog.Infof("[grpc] command: %s", req.GetCommand())
 
 	switch req.GetCommand() {
 	case CommandUpdateSnapshot:
@@ -107,7 +105,7 @@ func (s *CommandServer) ExecuteCommand(_ context.Context, req *protogen.CommandR
 			return getError(err)
 		}
 		// Print the snapshot data we were passed.
-		log.Printf("[grpc] UpdateSnapshot data: %+v", snap.LogInfo)
+		klog.Infof("[grpc] UpdateSnapshot data: %+v", snap.LogInfo)
 		return &protogen.CommandResponse{
 			Status: "success",
 		}, nil
@@ -119,7 +117,7 @@ func (s *CommandServer) ExecuteCommand(_ context.Context, req *protogen.CommandR
 	}
 }
 
-// RunGRPCServer starts a CommandService gRPC server on :50051 and blocks until
+// RunGRPCServer starts a Snapshot Updater Service gRPC server on :50051 and blocks until
 // the server stops or the listener fails. Tokens are decrypted against secret.
 func RunGRPCServer(secret string, kbClient client.Client) error {
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%v", grpcPort))
@@ -133,7 +131,7 @@ func RunGRPCServer(secret string, kbClient client.Client) error {
 		Secret:   secret,
 	})
 
-	log.Printf("[grpc] CommandService listening on :%s", grpcPort)
+	klog.Infof("[grpc] Snapshot Updater Service listening on :%s", grpcPort)
 	return srv.Serve(lis)
 }
 
