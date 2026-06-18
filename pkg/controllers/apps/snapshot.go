@@ -31,11 +31,18 @@ import (
 
 const (
 	ComponentLog = "log"
+
+	// maxLogLimit caps the caller-supplied history limit. Without an upper bound
+	// a hostile caller could set a huge limit so trimming never fires and the
+	// Snapshot status grows until it hits etcd's object-size limit.
+	maxLogLimit = 100
+	// maxLogBytes caps the caller-supplied log/error string stored per entry.
+	maxLogBytes = 4096
 )
 
-func (r *CommandServer) InitSnapshotComponentsStatus(name, namespace string) (*storageapi.Snapshot, error) {
+func (r *CommandServer) InitSnapshotComponentsStatus(ctx context.Context, name, namespace string) (*storageapi.Snapshot, error) {
 	var snapshot storageapi.Snapshot
-	err := r.KBClient.Get(context.TODO(), client.ObjectKey{
+	err := r.KBClient.Get(ctx, client.ObjectKey{
 		Namespace: namespace,
 		Name:      name,
 	}, &snapshot)
@@ -54,16 +61,16 @@ func (r *CommandServer) InitSnapshotComponentsStatus(name, namespace string) (*s
 	}
 	snapshot.Status.Components[ComponentLog] = compLog
 
-	if err := r.updateSnapshotStatus(&snapshot); err != nil {
+	if err := r.updateSnapshotStatus(ctx, &snapshot); err != nil {
 		return nil, fmt.Errorf("failed to update snapshot status :%w", err)
 	}
 
 	return &snapshot, nil
 }
 
-func (r *CommandServer) updateSnapshotStatus(snapshot *storageapi.Snapshot) error {
+func (r *CommandServer) updateSnapshotStatus(ctx context.Context, snapshot *storageapi.Snapshot) error {
 	_, err := kmc.PatchStatus(
-		context.Background(),
+		ctx,
 		r.KBClient,
 		snapshot,
 		func(obj client.Object) client.Object {
@@ -84,8 +91,19 @@ func trimLogHistory(logs *[]storageapi.Log, limit int) {
 	}
 }
 
-func (s *CommandServer) UpdateSnapshot(name, namespace string, info sidekickgrpc.LogInfo) error {
-	snapshot, err := s.InitSnapshotComponentsStatus(name, namespace)
+func (s *CommandServer) UpdateSnapshot(ctx context.Context, name, namespace string, info sidekickgrpc.LogInfo) error {
+	// Clamp caller-controlled inputs before they touch the Snapshot status.
+	if info.LogLimit > maxLogLimit {
+		info.LogLimit = maxLogLimit
+	}
+	if info.LogLimit < 0 {
+		info.LogLimit = 0
+	}
+	if len(info.Log) > maxLogBytes {
+		info.Log = info.Log[:maxLogBytes]
+	}
+
+	snapshot, err := s.InitSnapshotComponentsStatus(ctx, name, namespace)
 	if err != nil {
 		klog.Errorf("[grpc] failed to initialize snapshot components status: %v", err)
 		return err
@@ -116,5 +134,5 @@ func (s *CommandServer) UpdateSnapshot(name, namespace string, info sidekickgrpc
 		trimLogHistory(&component.LogStats.LastFailedStats, info.LogLimit)
 	}
 	snapshot.Status.Components[ComponentLog] = component
-	return s.updateSnapshotStatus(snapshot)
+	return s.updateSnapshotStatus(ctx, snapshot)
 }

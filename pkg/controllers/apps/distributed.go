@@ -19,6 +19,8 @@ package apps
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -30,6 +32,7 @@ import (
 	"time"
 
 	appsv1alpha1 "kubeops.dev/sidekick/apis/apps/v1alpha1"
+	"kubeops.dev/sidekick/grpc/token"
 
 	kubesliceapi "github.com/kubeslice/worker-operator/api/v1beta1"
 	corev1 "k8s.io/api/core/v1"
@@ -61,6 +64,23 @@ const (
 	// envGRPCServerAddress is the wal-g container env var carrying the gRPC server's
 	// slice DNS address (set to the same value as the ServiceExport slice alias).
 	envGRPCServerAddress = "GRPC_SERVER_ADDRESS"
+	// envGRPCTokenSecret is the wal-g container env var carrying the per-Sidekick
+	// signing key the archiver uses to mint request-bound gRPC tokens.
+	envGRPCTokenSecret = "GRPC_TOKEN_SECRET"
+	// envGRPCSnapshotToken is the wal-g container env var carrying the operator-
+	// issued encrypted grant naming the single Snapshot the archiver may update.
+	envGRPCSnapshotToken = "GRPC_SNAPSHOT_TOKEN"
+	// envSnapshotName is the wal-g container env var naming the Snapshot to update;
+	// it is set by the backup tooling and is the plaintext the grant is built from.
+	envSnapshotName = "SNAPSHOT_NAME"
+
+	// signingSecretKey / snapshotSecretKey are the data keys under which the
+	// per-Sidekick token signing key and snapshot-name encryption key live in the
+	// Secret.
+	signingSecretKey  = "signing-key"
+	snapshotSecretKey = "snapshot-key"
+	// signingKeyBytes is the length of a freshly generated key.
+	signingKeyBytes = 32
 
 	// grpcPortNumber is the gRPC CommandService port (see grpcPort in grpc.go).
 	grpcPortNumber int32 = 50051
@@ -82,12 +102,13 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Start the gRPC server exactly once, decrypting tokens with this
-	// Sidekick's UID as the shared secret.
+	// Start the gRPC server exactly once. It verifies each request's token
+	// against the per-Sidekick signing key, and authorizes the target Snapshot
+	// via the snapshot key — both stored in the Sidekick's Secret (see
+	// ensureGRPCKeys), loaded per request from the API server.
 	r.grpcOnce.Do(func() {
-		secret := string(sidekick.UID)
 		go func() {
-			if err := RunGRPCServer(secret, r.Client); err != nil {
+			if err := RunGRPCServer(r.Client); err != nil {
 				klog.Errorf("GRPC Server failed: %v", err)
 			}
 		}()
@@ -230,8 +251,22 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 	maps.Copy(annotation, sidekick.Annotations)
 	maps.Copy(annotation, leader.Annotations)
 
-	err = r.setToken(&sidekick)
+	// Ensure the per-Sidekick gRPC keys exist (random values in a Secret) and hand
+	// the archiver what it needs via env:
+	//   - the signing key: the archiver mints a short-lived, request-bound token
+	//     per gRPC call with it (the operator no longer pre-mints a token);
+	//   - the snapshot grant: the operator encrypts the one Snapshot name the
+	//     archiver may update with the snapshot key, so the archiver can only ever
+	//     update that Snapshot (it cannot read or forge the grant).
+	// Both values are stable across reconciles, so the pod spec does not drift.
+	signingKey, snapshotKey, err := r.ensureGRPCKeys(ctx, &sidekick)
 	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if err = r.setSigningKey(&sidekick, signingKey); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err = r.setSnapshotGrant(&sidekick, snapshotKey); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -948,28 +983,140 @@ func (r *SidekickReconciler) terminateManifestWork(ctx context.Context, sidekick
 	return err
 }
 
-func (r *SidekickReconciler) setToken(sidekick *appsv1alpha1.Sidekick) error {
+// signingSecretName is the name of the Secret holding a Sidekick's signing key.
+func signingSecretName(sidekickName string) string {
+	return sidekickName + "-grpc-key"
+}
+
+// ensureGRPCKeys returns the Sidekick's two gRPC secrets — the token signing key
+// and the snapshot-name encryption key — creating them with fresh random values
+// on first use and storing both in the per-Sidekick Secret.
+//
+//   - The signing key authenticates the archiver: it mints request-bound tokens
+//     with it and the gRPC server verifies them against this same value.
+//   - The snapshot key authorizes WHICH Snapshot the archiver may touch: the
+//     operator encrypts the allowed Snapshot name with it (see setSnapshotGrant)
+//     and the server decrypts and enforces it.
+//
+// Both are high-entropy random values — deliberately NOT the Sidekick UID, which
+// is discoverable and unsuitable as a secret. Neither is rotated implicitly once
+// created, so the archiver's env (and thus the pod spec) is stable across
+// reconciles.
+func (r *SidekickReconciler) ensureGRPCKeys(ctx context.Context, sidekick *appsv1alpha1.Sidekick) (signingKey, snapshotKey string, err error) {
+	name := signingSecretName(sidekick.Name)
+	key := types.NamespacedName{Namespace: sidekick.Namespace, Name: name}
+
+	var existing corev1.Secret
+	err = r.Get(ctx, key, &existing)
+	if err == nil && len(existing.Data[signingSecretKey]) > 0 && len(existing.Data[snapshotSecretKey]) > 0 {
+		return string(existing.Data[signingSecretKey]), string(existing.Data[snapshotSecretKey]), nil
+	}
+	if err != nil && !errors.IsNotFound(err) {
+		return "", "", err
+	}
+
+	freshSigning, err := randomKey()
+	if err != nil {
+		return "", "", err
+	}
+	freshSnapshot, err := randomKey()
+	if err != nil {
+		return "", "", err
+	}
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: sidekick.Namespace},
+	}
+	_, err = cu.CreateOrPatch(ctx, r.Client, secret, func(obj client.Object, createOp bool) client.Object {
+		s := obj.(*corev1.Secret)
+		s.OwnerReferences = []metav1.OwnerReference{
+			*metav1.NewControllerRef(sidekick, appsv1alpha1.SchemeGroupVersion.WithKind("Sidekick")),
+		}
+		if s.Data == nil {
+			s.Data = map[string][]byte{}
+		}
+		// Only populate missing keys so a concurrent reconcile that already wrote
+		// a value is never overwritten (which would invalidate live tokens/grants).
+		if len(s.Data[signingSecretKey]) == 0 {
+			s.Data[signingSecretKey] = []byte(freshSigning)
+		}
+		if len(s.Data[snapshotSecretKey]) == 0 {
+			s.Data[snapshotSecretKey] = []byte(freshSnapshot)
+		}
+		return s
+	})
+	if err != nil {
+		return "", "", err
+	}
+
+	// Re-read the authoritative values: a racing reconcile may have won the create.
+	if err = r.Get(ctx, key, &existing); err != nil {
+		return "", "", err
+	}
+	if len(existing.Data[signingSecretKey]) == 0 || len(existing.Data[snapshotSecretKey]) == 0 {
+		return "", "", fmt.Errorf("grpc keys empty in secret %s/%s after ensure", sidekick.Namespace, name)
+	}
+	return string(existing.Data[signingSecretKey]), string(existing.Data[snapshotSecretKey]), nil
+}
+
+// randomKey returns a high-entropy base64url-encoded key of signingKeyBytes bytes.
+func randomKey() (string, error) {
+	raw := make([]byte, signingKeyBytes)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate key: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+// setSigningKey hands the signing key to the archiver via the wal-g container's
+// env so it can mint request-bound tokens. The value is stable for the life of
+// the Sidekick, so it does not cause pod-spec drift.
+func (r *SidekickReconciler) setSigningKey(sidekick *appsv1alpha1.Sidekick, key string) error {
 	cont := getSidekickContainer(sidekick)
 	if cont == nil {
 		return fmt.Errorf("wal-g container not found")
 	}
-	snapShotName := ""
-	for _, env := range cont.Env {
-		if env.Name == "SNAPSHOT_NAME" {
-			snapShotName = env.Value
-			break
+	setEnv(cont, envGRPCTokenSecret, key)
+	return nil
+}
+
+// setSnapshotGrant issues the per-Sidekick snapshot authorization grant: it reads
+// the Snapshot name the archiver is meant to update (SNAPSHOT_NAME on the wal-g
+// container, set by the backup tooling), encrypts it with the snapshot key, and
+// hands the opaque ciphertext to the archiver via env. The archiver cannot read
+// or forge it — it only forwards it — and the server decrypts it to learn the one
+// Snapshot it will accept updates for. Encryption is deterministic, so the env
+// value is stable across reconciles and does not drift the pod spec.
+//
+// If SNAPSHOT_NAME is unset (a Sidekick that does not push snapshot updates) no
+// grant is issued; such a Sidekick simply cannot pass snapshot authorization.
+func (r *SidekickReconciler) setSnapshotGrant(sidekick *appsv1alpha1.Sidekick, snapshotKey string) error {
+	cont := getSidekickContainer(sidekick)
+	if cont == nil {
+		return fmt.Errorf("wal-g container not found")
+	}
+	snapshotName := getEnv(cont, envSnapshotName)
+	if snapshotName == "" {
+		klog.V(3).Infof("[grpc] %s not set on wal-g container of %s/%s; skipping snapshot grant",
+			envSnapshotName, sidekick.Namespace, sidekick.Name)
+		return nil
+	}
+	grant, err := token.EncryptString(snapshotKey, snapshotName)
+	if err != nil {
+		return fmt.Errorf("encrypt snapshot grant: %w", err)
+	}
+	setEnv(cont, envGRPCSnapshotToken, grant)
+	return nil
+}
+
+// getEnv returns the value of env var name on the container, or "" if unset.
+func getEnv(cont *appsv1alpha1.Container, name string) string {
+	for i := range cont.Env {
+		if cont.Env[i].Name == name {
+			return cont.Env[i].Value
 		}
 	}
-	if snapShotName == "" {
-		return fmt.Errorf("no SNAPSHOT_NAME")
-	}
-
-	token, err := GenerateToken(string(sidekick.UID), snapShotName)
-	if err != nil {
-		return err
-	}
-	setEnv(cont, "TOKEN", token)
-	return nil
+	return ""
 }
 
 // setGRPCAddress sets the kubeslice DNS address of the operator's gRPC server on

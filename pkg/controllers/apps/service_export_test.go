@@ -193,7 +193,8 @@ func TestSetGRPCAddress(t *testing.T) {
 			got = e.Value
 		}
 	}
-	want := "kubedb-sidekick.kubedb.svc.slice.local"
+	// setGRPCAddress appends the gRPC port to the slice DNS name.
+	want := "kubedb-sidekick.kubedb.svc.slice.local:50051"
 	if got != want {
 		t.Fatalf("%s env = %q, want %q", envGRPCServerAddress, got, want)
 	}

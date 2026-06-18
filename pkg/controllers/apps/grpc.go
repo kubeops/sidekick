@@ -21,14 +21,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
-	appsv1alpha1 "kubeops.dev/sidekick/apis/apps/v1alpha1"
 	sidekickgrpc "kubeops.dev/sidekick/grpc"
 	"kubeops.dev/sidekick/grpc/protogen"
+	"kubeops.dev/sidekick/grpc/token"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -37,6 +38,15 @@ import (
 const (
 	// grpcPort is the port the CommandService server listens on.
 	grpcPort = "50051"
+
+	// maxRecvMsgBytes caps the size of an incoming gRPC message. The snapshot
+	// envelope is tiny; this just bounds memory a hostile peer can force us to
+	// allocate per request.
+	maxRecvMsgBytes = 64 * 1024
+
+	// requestTimeout bounds how long a single command may run, including the
+	// Kubernetes API calls it makes.
+	requestTimeout = 15 * time.Second
 )
 
 // Commands understood by the CommandService server.
@@ -45,70 +55,55 @@ const (
 	CommandUpdateSnapshot = "UpdateSnapshot"
 )
 
+// errUnauthenticated is the single, deliberately vague error returned for every
+// authentication/authorization failure. Returning the same message for "unknown
+// sidekick", "bad token", "expired", "replayed", etc. denies an attacker an
+// oracle for probing which Sidekicks exist or which tokens are valid. Details
+// are logged server-side only.
+const errUnauthenticated = "unauthenticated"
+
 // CommandServer implements protogen.CommandServiceServer. Every request carries
-// an encrypted token (inside the SnapShot envelope) that is decrypted with
-// Secret before the request payload is accepted.
+// a short-lived, request-bound token (inside the SnapShot envelope) that is
+// verified against the per-Sidekick signing key before the payload is accepted.
 type CommandServer struct {
 	protogen.UnimplementedCommandServiceServer
 
 	// KBClient talks to the Kubernetes API server for any work a command needs
-	// to perform (e.g. fetching or creating objects).
+	// to perform (e.g. reading the signing-key Secret, patching Snapshot status).
 	KBClient client.Client
 
-	// Secret is the shared secret (the Sidekick UID) used to decrypt the token
-	// in each request. It must match the secret passed to GenerateToken on the
-	// client side.
-	Secret string
+	// replay rejects tokens whose nonce has already been seen.
+	replay *replayCache
 }
 
-// ExecuteCommand decrypts the token shipped with the request and, on success,
-// prints the decrypted claims and the data carried in the request.
-func (s *CommandServer) ExecuteCommand(_ context.Context, req *protogen.CommandRequest) (*protogen.CommandResponse, error) {
-	// The request data is a JSON-encoded SnapShot: {data, token}.
+// ExecuteCommand authenticates the request token and, on success, dispatches the
+// requested command. All auth failures return errUnauthenticated.
+func (s *CommandServer) ExecuteCommand(ctx context.Context, req *protogen.CommandRequest) (*protogen.CommandResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+
+	// The request data is a JSON-encoded SnapShot envelope.
 	var snap sidekickgrpc.SnapShot
 	if err := json.Unmarshal(req.GetData(), &snap); err != nil {
-		return &protogen.CommandResponse{
-			Status: "error",
-			Error:  fmt.Sprintf("failed to decode snapshot envelope: %v", err),
-		}, nil
+		klog.V(3).Infof("[grpc] bad envelope: %v", err)
+		return authError(), nil
 	}
 
-	var sidekick appsv1alpha1.Sidekick
-	if err := s.KBClient.Get(context.TODO(), types.NamespacedName{Namespace: snap.NameSpace, Name: snap.SidekickName}, &sidekick); err != nil {
-		// we'll ignore not-found errors, since they can't be fixed by an immediate
-		// requeue (we'll need to wait for a new notification), and we can get them
-		// on deleted requests.
-		return &protogen.CommandResponse{
-			Status: "error",
-			Error:  fmt.Sprintf("failed to get sidekick: %v", err),
-		}, nil
-	}
-	secret := string(sidekick.UID)
-
-	claims, err := DecryptToken(secret, snap.Token)
+	claims, err := s.authenticate(ctx, &snap)
 	if err != nil {
-		return &protogen.CommandResponse{
-			Status: "error",
-			Error:  fmt.Sprintf("token decryption failed: %v", err),
-		}, nil
+		klog.V(3).Infof("[grpc] auth rejected for sidekick %q/%q: %v", snap.NameSpace, snap.SidekickName, err)
+		return authError(), nil
 	}
 
-	// Token decrypted: dispatch on the requested command.
-	klog.Infof("[grpc] decrypted token for sidekick %s is %q", sidekick.Name, claims.Name)
-	klog.Infof("[grpc] command: %s", req.GetCommand())
+	klog.V(4).Infof("[grpc] authenticated request for sidekick %s/%s, command %s", snap.NameSpace, snap.SidekickName, req.GetCommand())
 
 	switch req.GetCommand() {
 	case CommandUpdateSnapshot:
-		err := s.UpdateSnapshot(claims.Name, sidekick.Namespace, snap.LogInfo)
-		if err != nil {
-			klog.Error(err)
+		if err := s.UpdateSnapshot(ctx, claims.SnapshotName, snap.NameSpace, snap.LogInfo); err != nil {
+			klog.Errorf("[grpc] UpdateSnapshot failed: %v", err)
 			return getError(err)
 		}
-		// Print the snapshot data we were passed.
-		klog.Infof("[grpc] UpdateSnapshot data: %+v", snap.LogInfo)
-		return &protogen.CommandResponse{
-			Status: "success",
-		}, nil
+		return &protogen.CommandResponse{Status: "success"}, nil
 	default:
 		return &protogen.CommandResponse{
 			Status: "error",
@@ -117,65 +112,100 @@ func (s *CommandServer) ExecuteCommand(_ context.Context, req *protogen.CommandR
 	}
 }
 
-// RunGRPCServer starts a Snapshot Updater Service gRPC server on :50051 and blocks until
-// the server stops or the listener fails. Tokens are decrypted against secret.
-func RunGRPCServer(secret string, kbClient client.Client) error {
+// authenticate verifies the token shipped with the request and authorizes its
+// target Snapshot. It loads the per-Sidekick signing and snapshot keys, decrypts
+// the token, checks expiry + identity + payload binding, enforces the operator-
+// issued snapshot grant, and rejects replays. It returns the validated claims.
+func (s *CommandServer) authenticate(ctx context.Context, snap *sidekickgrpc.SnapShot) (*token.Claims, error) {
+	signingKey, snapshotKey, err := s.grpcKeys(ctx, snap.NameSpace, snap.SidekickName)
+	if err != nil {
+		return nil, fmt.Errorf("load grpc keys: %w", err)
+	}
+
+	claims, err := token.Open(signingKey, snap.Token)
+	if err != nil {
+		return nil, err
+	}
+
+	digest, err := bindingDigest(snap)
+	if err != nil {
+		return nil, fmt.Errorf("compute digest: %w", err)
+	}
+	if err := claims.Verify(time.Now(), snap.SidekickName, snap.NameSpace, digest); err != nil {
+		return nil, err
+	}
+
+	// Authorize the target Snapshot. The operator encrypted the one Snapshot name
+	// this Sidekick may update into snap.SnapshotToken; decrypt it with the
+	// per-Sidekick snapshot key and require the token's claimed SnapshotName to
+	// match. A compromised archiver can put any name in its (signed) claims, but
+	// it cannot forge a grant for a different Snapshot — it lacks the snapshot key
+	// — so the mismatch is rejected here.
+	granted, err := token.DecryptString(snapshotKey, snap.SnapshotToken)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt snapshot grant: %w", err)
+	}
+	if granted == "" || granted != claims.SnapshotName {
+		return nil, fmt.Errorf("snapshot %q not authorized for sidekick %s/%s", claims.SnapshotName, snap.NameSpace, snap.SidekickName)
+	}
+
+	// Replay check is last: only burn a nonce once the rest of the token is
+	// known-good, so a malformed/expired token can't evict a legitimate nonce.
+	if !s.replay.accept(claims.Nonce, claims.ExpiresAt) {
+		return nil, fmt.Errorf("nonce already used")
+	}
+	return claims, nil
+}
+
+// grpcKeys reads the random per-Sidekick signing key and snapshot encryption key
+// from its Secret. Both are generated and stored by the operator (see
+// ensureGRPCKeys); they are NOT the Sidekick UID, which is discoverable and
+// therefore unsuitable as a secret.
+func (s *CommandServer) grpcKeys(ctx context.Context, namespace, sidekickName string) (signingKey, snapshotKey string, err error) {
+	var secret corev1.Secret
+	if err = s.KBClient.Get(ctx, types.NamespacedName{
+		Namespace: namespace,
+		Name:      signingSecretName(sidekickName),
+	}, &secret); err != nil {
+		return "", "", err
+	}
+	sign := secret.Data[signingSecretKey]
+	snap := secret.Data[snapshotSecretKey]
+	if len(sign) == 0 || len(snap) == 0 {
+		return "", "", fmt.Errorf("grpc keys missing in secret %s/%s", namespace, signingSecretName(sidekickName))
+	}
+	return string(sign), string(snap), nil
+}
+
+// bindingDigest computes the request-payload digest the token must be bound to.
+func bindingDigest(snap *sidekickgrpc.SnapShot) (string, error) {
+	payload, err := snap.BindingPayload()
+	if err != nil {
+		return "", err
+	}
+	return token.RequestDigest(payload), nil
+}
+
+func authError() *protogen.CommandResponse {
+	return &protogen.CommandResponse{Status: "error", Error: errUnauthenticated}
+}
+
+// RunGRPCServer starts the Snapshot Updater Service gRPC server on :50051 and
+// blocks until the server stops or the listener fails.
+func RunGRPCServer(kbClient client.Client) error {
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%v", grpcPort))
 	if err != nil {
 		return fmt.Errorf("failed to listen on :%s: %w", grpcPort, err)
 	}
 
-	srv := grpc.NewServer()
+	srv := grpc.NewServer(grpc.MaxRecvMsgSize(maxRecvMsgBytes))
 	protogen.RegisterCommandServiceServer(srv, &CommandServer{
 		KBClient: kbClient,
-		Secret:   secret,
+		replay:   newReplayCache(),
 	})
 
 	klog.Infof("[grpc] Snapshot Updater Service listening on :%s", grpcPort)
 	return srv.Serve(lis)
-}
-
-// SendCommand is a small client helper that mints a token for name using secret,
-// wraps the log info + token in a SnapShot envelope, and calls ExecuteCommand on
-// the server at addr. data is the JSON-encoded LogInfo payload. It returns the
-// server response.
-func SendCommand(ctx context.Context, addr, secret, name, command string, data []byte) (*protogen.CommandResponse, error) {
-	token, err := GenerateToken(secret, name)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate token: %w", err)
-	}
-
-	var info sidekickgrpc.LogInfo
-	if len(data) > 0 {
-		if err := json.Unmarshal(data, &info); err != nil {
-			return nil, fmt.Errorf("failed to decode log info: %w", err)
-		}
-	}
-
-	envelope, err := json.Marshal(sidekickgrpc.SnapShot{
-		SidekickName: name,
-		LogInfo:      info,
-		Token:        token,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal snapshot envelope: %w", err)
-	}
-
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial %s: %w", addr, err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	cmdClient := protogen.NewCommandServiceClient(conn)
-
-	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	return cmdClient.ExecuteCommand(callCtx, &protogen.CommandRequest{
-		Command: command,
-		Data:    envelope,
-	})
 }
 
 func getError(err error) (*protogen.CommandResponse, error) {
@@ -183,4 +213,39 @@ func getError(err error) (*protogen.CommandResponse, error) {
 		Status: "error",
 		Error:  err.Error(),
 	}, nil
+}
+
+// replayCache rejects token nonces that have already been seen, within the
+// token's validity window. Entries are dropped once their token would have
+// expired anyway, so the cache stays bounded by (request rate × TTL).
+//
+// The cache is in-memory and per-process: it resets on operator restart, which
+// leaves a small replay window equal to the token TTL right after a restart.
+// That residual risk is acceptable for this path; closing it fully would require
+// transport-level authentication (mTLS), tracked separately.
+type replayCache struct {
+	mu   sync.Mutex
+	seen map[string]int64 // nonce -> expiry unix seconds
+}
+
+func newReplayCache() *replayCache {
+	return &replayCache{seen: make(map[string]int64)}
+}
+
+// accept records nonce and returns true if it had not been seen before.
+func (c *replayCache) accept(nonce string, exp int64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := time.Now().Unix()
+	for k, e := range c.seen {
+		if e <= now {
+			delete(c.seen, k)
+		}
+	}
+	if _, ok := c.seen[nonce]; ok {
+		return false
+	}
+	c.seen[nonce] = exp
+	return true
 }

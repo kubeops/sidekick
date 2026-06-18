@@ -16,11 +16,36 @@ limitations under the License.
 
 package grpc
 
+import "encoding/json"
+
 type SnapShot struct {
 	LogInfo      LogInfo `json:"logInfo"`
 	SidekickName string  `json:"sidekickName"`
 	NameSpace    string  `json:"namespace"`
 	Token        string  `json:"token"`
+	// SnapshotToken is the operator-issued, encrypted grant naming the single
+	// Snapshot this archiver is authorized to update. The archiver cannot read or
+	// forge it (it lacks the snapshot encryption key) — it only forwards it. The
+	// server decrypts it with the per-Sidekick snapshot key and refuses to act on
+	// any Snapshot other than the one named inside.
+	SnapshotToken string `json:"snapshotToken"`
+}
+
+// BindingPayload returns the canonical bytes that a token is bound to: every
+// request-identifying field except the token itself. The minting client and the
+// verifying server both feed this into token.RequestDigest, so a token can only
+// be used with the exact payload it was minted for. Marshalling a struct with
+// fixed field order keeps the output stable across both sides.
+func (s SnapShot) BindingPayload() ([]byte, error) {
+	return json.Marshal(struct {
+		SidekickName string  `json:"sidekickName"`
+		NameSpace    string  `json:"namespace"`
+		LogInfo      LogInfo `json:"logInfo"`
+	}{
+		SidekickName: s.SidekickName,
+		NameSpace:    s.NameSpace,
+		LogInfo:      s.LogInfo,
+	})
 }
 
 type LogInfo struct {
