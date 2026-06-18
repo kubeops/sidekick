@@ -18,6 +18,7 @@ package apps
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	sidekickgrpc "kubeops.dev/sidekick/grpc"
@@ -66,6 +67,22 @@ func (r *CommandServer) InitSnapshotComponentsStatus(ctx context.Context, name, 
 	}
 
 	return &snapshot, nil
+}
+
+// GetSnapshot fetches the named Snapshot from the controller cluster and returns
+// it JSON-encoded. It is the read counterpart of UpdateSnapshot: the gRPC handler
+// only ever calls it with claims.SnapshotName, so a caller can retrieve only the
+// Snapshot its token authorizes, never an arbitrary one.
+func (s *CommandServer) GetSnapshot(ctx context.Context, name, namespace string) ([]byte, error) {
+	var snapshot storageapi.Snapshot
+	if err := s.KBClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &snapshot); err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(&snapshot)
+	if err != nil {
+		return nil, fmt.Errorf("marshal snapshot %s/%s: %w", namespace, name, err)
+	}
+	return data, nil
 }
 
 func (r *CommandServer) updateSnapshotStatus(ctx context.Context, snapshot *storageapi.Snapshot) error {

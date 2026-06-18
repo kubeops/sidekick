@@ -53,6 +53,10 @@ const (
 const (
 	// CommandUpdateSnapshot updates the snapshot carried in the request data.
 	CommandUpdateSnapshot = "UpdateSnapshot"
+	// CommandGetSnapshot returns the authorized Snapshot, JSON-encoded in the
+	// response Output. The client gets back only the Snapshot named in its token
+	// (claims.SnapshotName), never an arbitrary one.
+	CommandGetSnapshot = "GetSnapshot"
 )
 
 // errUnauthenticated is the single, deliberately vague error returned for every
@@ -104,6 +108,13 @@ func (s *CommandServer) ExecuteCommand(ctx context.Context, req *protogen.Comman
 			return getError(err)
 		}
 		return &protogen.CommandResponse{Status: "success"}, nil
+	case CommandGetSnapshot:
+		data, err := s.GetSnapshot(ctx, claims.SnapshotName, snap.NameSpace)
+		if err != nil {
+			klog.Errorf("[grpc] GetSnapshot failed: %v", err)
+			return getError(err)
+		}
+		return &protogen.CommandResponse{Status: "success", Output: data}, nil
 	default:
 		return &protogen.CommandResponse{
 			Status: "error",
