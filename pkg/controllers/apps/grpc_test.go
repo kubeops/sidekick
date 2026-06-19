@@ -73,11 +73,11 @@ func startTestServer(t *testing.T, objs ...client.Object) (addr string, stop fun
 
 // signingSecret seeds both per-Sidekick keys the server needs: the signing key
 // (token auth) and the snapshot key (snapshot-grant authorization).
-func signingSecret(namespace, sidekickName, key string) *corev1.Secret {
+func signingSecret() *corev1.Secret {
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: signingSecretName(sidekickName), Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: signingSecretName(testSidekick), Namespace: testNamespace},
 		Data: map[string][]byte{
-			signingSecretKey:  []byte(key),
+			signingSecretKey:  []byte(testKey),
 			snapshotSecretKey: []byte(testSnapshotKey),
 		},
 	}
@@ -93,7 +93,7 @@ func testSidekickObj() *appsv1alpha1.Sidekick {
 
 // mintEnvelope builds a SnapShot envelope with a token minted for it. mutate can
 // tweak the claims (e.g. expire them) before minting to exercise rejection paths.
-func mintEnvelope(t *testing.T, key, snapshotName string, info sidekickgrpc.LogInfo, mutate func(*token.Claims)) []byte {
+func mintEnvelope(t *testing.T, key string, info sidekickgrpc.LogInfo, mutate func(*token.Claims)) []byte {
 	t.Helper()
 	snap := sidekickgrpc.SnapShot{
 		SidekickName: testSidekick,
@@ -102,7 +102,7 @@ func mintEnvelope(t *testing.T, key, snapshotName string, info sidekickgrpc.LogI
 	}
 	// Attach the operator-issued grant authorizing this exact snapshot. It is
 	// independent of the signed token (the binding payload excludes it).
-	grant, err := token.EncryptString(testSnapshotKey, snapshotName)
+	grant, err := token.EncryptString(testSnapshotKey, testSnapshot)
 	if err != nil {
 		t.Fatalf("encrypt snapshot grant: %v", err)
 	}
@@ -117,7 +117,7 @@ func mintEnvelope(t *testing.T, key, snapshotName string, info sidekickgrpc.LogI
 		t.Fatalf("nonce: %v", err)
 	}
 	claims := token.Claims{
-		SnapshotName: snapshotName,
+		SnapshotName: testSnapshot,
 		SidekickName: testSidekick,
 		Namespace:    testNamespace,
 		Digest:       token.RequestDigest(payload),
@@ -157,10 +157,10 @@ func execute(t *testing.T, addr, command string, data []byte) *protogen.CommandR
 }
 
 func TestExecuteCommand_ValidToken(t *testing.T) {
-	addr, stop := startTestServer(t, testSidekickObj(), testSnapshotObj(), signingSecret(testNamespace, testSidekick, testKey))
+	addr, stop := startTestServer(t, testSidekickObj(), testSnapshotObj(), signingSecret())
 	defer stop()
 
-	env := mintEnvelope(t, testKey, testSnapshot, sidekickgrpc.LogInfo{Type: "success", LogLimit: 5}, nil)
+	env := mintEnvelope(t, testKey, sidekickgrpc.LogInfo{Type: "success", LogLimit: 5}, nil)
 	resp := execute(t, addr, CommandUpdateSnapshot, env)
 	if resp.GetStatus() != "success" {
 		t.Fatalf("expected success, got %q (error=%q)", resp.GetStatus(), resp.GetError())
@@ -168,10 +168,10 @@ func TestExecuteCommand_ValidToken(t *testing.T) {
 }
 
 func TestExecuteCommand_UnknownCommand(t *testing.T) {
-	addr, stop := startTestServer(t, testSnapshotObj(), signingSecret(testNamespace, testSidekick, testKey))
+	addr, stop := startTestServer(t, testSnapshotObj(), signingSecret())
 	defer stop()
 
-	env := mintEnvelope(t, testKey, testSnapshot, sidekickgrpc.LogInfo{}, nil)
+	env := mintEnvelope(t, testKey, sidekickgrpc.LogInfo{}, nil)
 	resp := execute(t, addr, "bogus", env)
 	if resp.GetStatus() != "error" {
 		t.Fatalf("expected error for unknown command, got %q", resp.GetStatus())
@@ -180,10 +180,10 @@ func TestExecuteCommand_UnknownCommand(t *testing.T) {
 
 func TestExecuteCommand_WrongKey(t *testing.T) {
 	// Server stores testKey; client signs with a different key -> token.Open fails.
-	addr, stop := startTestServer(t, testSnapshotObj(), signingSecret(testNamespace, testSidekick, testKey))
+	addr, stop := startTestServer(t, testSnapshotObj(), signingSecret())
 	defer stop()
 
-	env := mintEnvelope(t, "a-different-key", testSnapshot, sidekickgrpc.LogInfo{}, nil)
+	env := mintEnvelope(t, "a-different-key", sidekickgrpc.LogInfo{}, nil)
 	resp := execute(t, addr, CommandUpdateSnapshot, env)
 	if resp.GetStatus() != "error" || resp.GetError() != errUnauthenticated {
 		t.Fatalf("expected %q, got status=%q error=%q", errUnauthenticated, resp.GetStatus(), resp.GetError())
@@ -195,7 +195,7 @@ func TestExecuteCommand_MissingSecret(t *testing.T) {
 	addr, stop := startTestServer(t, testSnapshotObj())
 	defer stop()
 
-	env := mintEnvelope(t, testKey, testSnapshot, sidekickgrpc.LogInfo{}, nil)
+	env := mintEnvelope(t, testKey, sidekickgrpc.LogInfo{}, nil)
 	resp := execute(t, addr, CommandUpdateSnapshot, env)
 	if resp.GetStatus() != "error" || resp.GetError() != errUnauthenticated {
 		t.Fatalf("expected %q, got status=%q error=%q", errUnauthenticated, resp.GetStatus(), resp.GetError())
@@ -203,10 +203,10 @@ func TestExecuteCommand_MissingSecret(t *testing.T) {
 }
 
 func TestExecuteCommand_Expired(t *testing.T) {
-	addr, stop := startTestServer(t, testSnapshotObj(), signingSecret(testNamespace, testSidekick, testKey))
+	addr, stop := startTestServer(t, testSnapshotObj(), signingSecret())
 	defer stop()
 
-	env := mintEnvelope(t, testKey, testSnapshot, sidekickgrpc.LogInfo{}, func(c *token.Claims) {
+	env := mintEnvelope(t, testKey, sidekickgrpc.LogInfo{}, func(c *token.Claims) {
 		c.ExpiresAt = time.Now().Add(-time.Minute).Unix()
 	})
 	resp := execute(t, addr, CommandUpdateSnapshot, env)
@@ -216,11 +216,11 @@ func TestExecuteCommand_Expired(t *testing.T) {
 }
 
 func TestExecuteCommand_PayloadTamper(t *testing.T) {
-	addr, stop := startTestServer(t, testSnapshotObj(), signingSecret(testNamespace, testSidekick, testKey))
+	addr, stop := startTestServer(t, testSnapshotObj(), signingSecret())
 	defer stop()
 
 	// Mint a token bound to one payload, then alter the payload on the wire.
-	env := mintEnvelope(t, testKey, testSnapshot, sidekickgrpc.LogInfo{Type: "success", LogLimit: 5}, nil)
+	env := mintEnvelope(t, testKey, sidekickgrpc.LogInfo{Type: "success", LogLimit: 5}, nil)
 	var snap sidekickgrpc.SnapShot
 	if err := json.Unmarshal(env, &snap); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -238,13 +238,13 @@ func TestExecuteCommand_PayloadTamper(t *testing.T) {
 }
 
 func TestExecuteCommand_SnapshotNotAuthorized(t *testing.T) {
-	addr, stop := startTestServer(t, testSnapshotObj(), signingSecret(testNamespace, testSidekick, testKey))
+	addr, stop := startTestServer(t, testSnapshotObj(), signingSecret())
 	defer stop()
 
 	// A fully valid token claiming testSnapshot, but the grant authorizes a
 	// DIFFERENT snapshot. The server must refuse: the archiver cannot forge a
 	// grant for a snapshot it was not authorized for.
-	env := mintEnvelope(t, testKey, testSnapshot, sidekickgrpc.LogInfo{Type: "success", LogLimit: 5}, nil)
+	env := mintEnvelope(t, testKey, sidekickgrpc.LogInfo{Type: "success", LogLimit: 5}, nil)
 	var snap sidekickgrpc.SnapShot
 	if err := json.Unmarshal(env, &snap); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -266,12 +266,12 @@ func TestExecuteCommand_SnapshotNotAuthorized(t *testing.T) {
 }
 
 func TestExecuteCommand_MissingGrant(t *testing.T) {
-	addr, stop := startTestServer(t, testSnapshotObj(), signingSecret(testNamespace, testSidekick, testKey))
+	addr, stop := startTestServer(t, testSnapshotObj(), signingSecret())
 	defer stop()
 
 	// Strip the grant: with no operator authorization the server cannot confirm
 	// which snapshot is allowed, so it rejects.
-	env := mintEnvelope(t, testKey, testSnapshot, sidekickgrpc.LogInfo{Type: "success", LogLimit: 5}, nil)
+	env := mintEnvelope(t, testKey, sidekickgrpc.LogInfo{Type: "success", LogLimit: 5}, nil)
 	var snap sidekickgrpc.SnapShot
 	if err := json.Unmarshal(env, &snap); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -289,11 +289,11 @@ func TestExecuteCommand_MissingGrant(t *testing.T) {
 }
 
 func TestExecuteCommand_Replay(t *testing.T) {
-	addr, stop := startTestServer(t, testSnapshotObj(), signingSecret(testNamespace, testSidekick, testKey))
+	addr, stop := startTestServer(t, testSnapshotObj(), signingSecret())
 	defer stop()
 
 	// The exact same envelope (same nonce) twice: first accepted, second rejected.
-	env := mintEnvelope(t, testKey, testSnapshot, sidekickgrpc.LogInfo{Type: "success", LogLimit: 5}, nil)
+	env := mintEnvelope(t, testKey, sidekickgrpc.LogInfo{Type: "success", LogLimit: 5}, nil)
 
 	if resp := execute(t, addr, CommandUpdateSnapshot, env); resp.GetStatus() != "success" {
 		t.Fatalf("first call should succeed, got status=%q error=%q", resp.GetStatus(), resp.GetError())

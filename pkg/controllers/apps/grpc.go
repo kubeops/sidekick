@@ -105,14 +105,14 @@ func (s *CommandServer) ExecuteCommand(ctx context.Context, req *protogen.Comman
 	case CommandUpdateSnapshot:
 		if err := s.UpdateSnapshot(ctx, claims.SnapshotName, snap.NameSpace, snap.LogInfo); err != nil {
 			klog.Errorf("[grpc] UpdateSnapshot failed: %v", err)
-			return getError(err)
+			return getError(err), nil
 		}
 		return &protogen.CommandResponse{Status: "success"}, nil
 	case CommandGetSnapshot:
 		data, err := s.GetSnapshot(ctx, claims.SnapshotName, snap.NameSpace)
 		if err != nil {
 			klog.Errorf("[grpc] GetSnapshot failed: %v", err)
-			return getError(err)
+			return getError(err), nil
 		}
 		return &protogen.CommandResponse{Status: "success", Output: data}, nil
 	default:
@@ -219,11 +219,11 @@ func RunGRPCServer(kbClient client.Client) error {
 	return srv.Serve(lis)
 }
 
-func getError(err error) (*protogen.CommandResponse, error) {
+func getError(err error) *protogen.CommandResponse {
 	return &protogen.CommandResponse{
 		Status: "error",
 		Error:  err.Error(),
-	}, nil
+	}
 }
 
 // replayCache rejects token nonces that have already been seen, within the
