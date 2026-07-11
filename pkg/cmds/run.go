@@ -24,6 +24,7 @@ import (
 	appsv1alpha1 "kubeops.dev/sidekick/apis/apps/v1alpha1"
 	appscontrollers "kubeops.dev/sidekick/pkg/controllers/apps"
 
+	kubesliceapi "github.com/kubeslice/worker-operator/api/v1beta1"
 	"github.com/spf13/cobra"
 	v "gomodules.xyz/x/version"
 	core "k8s.io/api/core/v1"
@@ -35,6 +36,7 @@ import (
 	"k8s.io/klog/v2"
 	clustermeta "kmodules.xyz/client-go/cluster"
 	"kmodules.xyz/client-go/meta"
+	storageapi "kubestash.dev/apimachinery/apis/storage/v1alpha1"
 	ocmclient "open-cluster-management.io/api/client/work/clientset/versioned"
 	apiworkv1 "open-cluster-management.io/api/work/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -55,6 +57,11 @@ func init() {
 	utilruntime.Must(appsv1alpha1.AddToScheme(scheme))
 	// Add ManifestWork (open-cluster-management) types so runtime can recognize them
 	utilruntime.Must(apiworkv1.Install(scheme))
+	// Add kubeslice ServiceExport types so the operator can expose the gRPC server on a slice
+	utilruntime.Must(kubesliceapi.AddToScheme(scheme))
+	// Add kubestash storage types (Snapshot) so the gRPC server's client can read
+	// and patch Snapshot status when archivers report log updates.
+	utilruntime.Must(storageapi.AddToScheme(scheme))
 }
 
 func NewCmdRun() *cobra.Command {

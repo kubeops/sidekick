@@ -20,11 +20,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"time"
 
 	appsv1alpha1 "kubeops.dev/sidekick/apis/apps/v1alpha1"
+	"kubeops.dev/sidekick/pkg/snapshotserver"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -59,6 +61,24 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 		// on deleted requests.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+
+	// Start the gRPC server exactly once. It verifies each request's token
+	// against the per-Sidekick signing key, and authorizes the target Snapshot
+	// via the snapshot key — both stored in the Sidekick's Secret (see
+	// ensureGRPCKeys), loaded per request from the API server.
+	r.grpcOnce.Do(func() {
+		go func() {
+			if err := snapshotserver.RunGRPCServer(r.Client); err != nil {
+				klog.Errorf("GRPC Server failed: %v", err)
+			}
+		}()
+
+		// Expose the gRPC server on the kubeslice slice so wal-g sidecars in
+		// remote clusters can reach it.
+		if err := r.ensureServiceExport(ctx, &sidekick); err != nil {
+			klog.Errorf("failed to ensure ServiceExport for gRPC server: %v", err)
+		}
+	})
 
 	err := r.handleDistributedSidekickFinalizer(ctx, &sidekick)
 	if err != nil {
@@ -181,9 +201,38 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 
 	// pod not exists, so create one
 	o1 := metav1.NewControllerRef(&sidekick, appsv1alpha1.SchemeGroupVersion.WithKind("Sidekick"))
-	annotation := sidekick.Annotations
-	for k, v := range leader.Annotations {
-		annotation[k] = v
+	// Build the pod's annotations in a fresh map. Do NOT alias sidekick.Annotations
+	// here: aliasing merges the leader pod's annotations (kubeslice/nsm/ocm injection
+	// keys) into the Sidekick's own map, which then poisons meta.GenerationHash(&sidekick)
+	// at keyHash time. The next reconcile recomputes the expected hash from the clean
+	// Sidekick (without leader annotations), so the stored and expected hashes never
+	// match and the ManifestWork/pod is deleted and recreated forever.
+	annotation := make(map[string]string, len(sidekick.Annotations)+len(leader.Annotations))
+	maps.Copy(annotation, sidekick.Annotations)
+	maps.Copy(annotation, leader.Annotations)
+
+	// Ensure the per-Sidekick gRPC keys exist (random values in a Secret) and hand
+	// the archiver what it needs via env:
+	//   - the signing key: the archiver mints a short-lived, request-bound token
+	//     per gRPC call with it (the operator no longer pre-mints a token);
+	//   - the snapshot grant: the operator encrypts the one Snapshot name the
+	//     archiver may update with the snapshot key, so the archiver can only ever
+	//     update that Snapshot (it cannot read or forge the grant).
+	// Both values are stable across reconciles, so the pod spec does not drift.
+	signingKey, snapshotKey, err := r.ensureGRPCKeys(ctx, &sidekick)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if err = r.setSigningKey(&sidekick, signingKey); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err = r.setSnapshotGrant(&sidekick, snapshotKey); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	err = r.setGRPCAddress(&sidekick)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 
 	pod := corev1.Pod{
@@ -711,26 +760,31 @@ func isDistributedSidekickPodRunning(mw *apiworkv1.ManifestWork) bool {
 
 func (r *SidekickReconciler) getDistributedPodNamespace(ctx context.Context, mwName string) (string, error) {
 	// Get all namespaces
-	var err error
 	var nsList corev1.NamespaceList
-	err = r.List(ctx, &nsList, &client.ListOptions{})
-	if err != nil {
+	if err := r.List(ctx, &nsList, &client.ListOptions{}); err != nil {
 		return "", err
 	}
-	namespace := ""
+	// notFound holds the last NotFound so callers that special-case it still see
+	// it when the ManifestWork exists in no namespace. It must NOT leak out once
+	// we actually find the ManifestWork: returning (namespace, NotFound) makes the
+	// caller skip its cached Get and re-run the pod-creation path on every reconcile,
+	// which re-mints the TOKEN env and triggers a forbidden update of the running pod.
+	var notFound error
 	for _, ns := range nsList.Items {
-		mw, err2 := r.OCMClient.WorkV1().ManifestWorks(ns.Name).Get(ctx, mwName, metav1.GetOptions{})
-		if err2 != nil && !errors.IsNotFound(err2) {
-			return "", err2
+		mw, err := r.OCMClient.WorkV1().ManifestWorks(ns.Name).Get(ctx, mwName, metav1.GetOptions{})
+		if err != nil {
+			if errors.IsNotFound(err) {
+				notFound = err
+				continue
+			}
+			return "", err
 		}
-		if err2 == nil && mw != nil {
-			namespace = mw.Namespace
-			break
+		if mw != nil {
+			return mw.Namespace, nil
 		}
-		err = err2
 	}
 
-	return namespace, err
+	return "", notFound
 }
 
 func (r *SidekickReconciler) deleteMW(ctx context.Context, mw *apiworkv1.ManifestWork) error {
