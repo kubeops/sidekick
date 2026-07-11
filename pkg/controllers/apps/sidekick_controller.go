@@ -189,7 +189,8 @@ func (r *SidekickReconciler) createSidekickPod(ctx context.Context, sidekick *ap
 	// kubectl delete, then pod will be gracefully terminated which will led
 	// to pod.status.phase: succeeded. We need to control this behaviour.
 	// By adding finalizer, we will know who is deleting the object
-	_, err = cu.CreateOrPatch(ctx, r.Client, pod,
+	_, err = cu.CreateOrPatch(
+		ctx, r.Client, pod,
 		func(in client.Object, createOp bool) client.Object {
 			p := in.(*corev1.Pod)
 			p.ObjectMeta = core_util.AddFinalizer(p.ObjectMeta, getFinalizerName())
@@ -330,7 +331,8 @@ func (r *SidekickReconciler) terminate(ctx context.Context, sidekick *appsv1alph
 		return err
 	}
 
-	_, err = cu.CreateOrPatch(ctx, r.Client, sidekick,
+	_, err = cu.CreateOrPatch(
+		ctx, r.Client, sidekick,
 		func(in client.Object, createOp bool) client.Object {
 			sk := in.(*appsv1alpha1.Sidekick)
 			sk.ObjectMeta = core_util.RemoveFinalizer(sk.ObjectMeta, getFinalizerName())

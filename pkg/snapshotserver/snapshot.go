@@ -98,7 +98,8 @@ func (r *CommandServer) updateSnapshotStatus(ctx context.Context, snapshot *stor
 			in.Status.TotalComponents = snapshot.Status.TotalComponents
 			in.Status.Components = snapshot.Status.Components
 			return in
-		})
+		},
+	)
 	return err
 }
 
