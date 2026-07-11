@@ -78,9 +78,6 @@ const (
 	// signingKeyBytes is the length of a freshly generated key.
 	signingKeyBytes = 32
 
-	// grpcPortNumber is the gRPC CommandService port (see grpcPort in grpc.go).
-	grpcPortNumber int32 = 50051
-
 	// kubeSliceDomainSuffix is the DNS domain kubeslice serves exported services on.
 	kubeSliceDomainSuffix = "slice.local"
 )
@@ -1122,7 +1119,7 @@ func (r *SidekickReconciler) setGRPCAddress(sidekick *appsv1alpha1.Sidekick) err
 	if err != nil {
 		return err
 	}
-	addr = fmt.Sprintf("%s:%d", addr, grpcPortNumber)
+	addr = fmt.Sprintf("%s:%d", addr, snapshotserver.GRPCPort)
 	setEnv(cont, envGRPCServerAddress, addr)
 	return nil
 }
@@ -1274,7 +1271,7 @@ func (r *SidekickReconciler) ensureServiceExport(ctx context.Context, sidekick *
 		in.Spec.Ports = []kubesliceapi.ServicePort{
 			{
 				Name:          "grpc",
-				ContainerPort: grpcPortNumber,
+				ContainerPort: snapshotserver.GRPCPort,
 				Protocol:      corev1.ProtocolTCP,
 			},
 		}

@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	appsv1alpha1 "kubeops.dev/sidekick/apis/apps/v1alpha1"
+	"kubeops.dev/sidekick/pkg/snapshotserver"
 
 	kubesliceapi "github.com/kubeslice/worker-operator/api/v1beta1"
 	corev1 "k8s.io/api/core/v1"
@@ -256,10 +257,10 @@ func TestEnsureServiceExport(t *testing.T) {
 	}
 
 	if len(se.Spec.Ports) != 1 ||
-		se.Spec.Ports[0].ContainerPort != grpcPortNumber ||
+		se.Spec.Ports[0].ContainerPort != snapshotserver.GRPCPort ||
 		se.Spec.Ports[0].Name != "grpc" ||
 		se.Spec.Ports[0].Protocol != corev1.ProtocolTCP {
-		t.Errorf("Ports = %+v, want single grpc/%d/TCP", se.Spec.Ports, grpcPortNumber)
+		t.Errorf("Ports = %+v, want single grpc/%d/TCP", se.Spec.Ports, snapshotserver.GRPCPort)
 	}
 
 	// Idempotency: a second call must not error.

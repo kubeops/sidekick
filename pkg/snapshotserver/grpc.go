@@ -35,10 +35,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const (
-	// grpcPort is the port the CommandService server listens on.
-	grpcPort = "50051"
+// GRPCPort is the single source of truth for the CommandService port: the
+// server listens on it and the reconciler advertises it on the ServiceExport and
+// in the address handed to the archiver. Keeping one constant prevents the two
+// sides from drifting to different ports.
+const GRPCPort int32 = 50051
 
+const (
 	// maxRecvMsgBytes caps the size of an incoming gRPC message. The snapshot
 	// envelope is tiny; this just bounds memory a hostile peer can force us to
 	// allocate per request.
@@ -204,9 +207,9 @@ func authError() *protogen.CommandResponse {
 // RunGRPCServer starts the Snapshot Updater Service gRPC server on :50051 and
 // blocks until the server stops or the listener fails.
 func RunGRPCServer(kbClient client.Client) error {
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%v", grpcPort))
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", GRPCPort))
 	if err != nil {
-		return fmt.Errorf("failed to listen on :%s: %w", grpcPort, err)
+		return fmt.Errorf("failed to listen on :%d: %w", GRPCPort, err)
 	}
 
 	srv := grpc.NewServer(grpc.MaxRecvMsgSize(maxRecvMsgBytes))
@@ -215,7 +218,7 @@ func RunGRPCServer(kbClient client.Client) error {
 		replay:   newReplayCache(),
 	})
 
-	klog.Infof("[grpc] Snapshot Updater Service listening on :%s", grpcPort)
+	klog.Infof("[grpc] Snapshot Updater Service listening on :%d", GRPCPort)
 	return srv.Serve(lis)
 }
 
