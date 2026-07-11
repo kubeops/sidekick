@@ -33,6 +33,7 @@ import (
 
 	appsv1alpha1 "kubeops.dev/sidekick/apis/apps/v1alpha1"
 	"kubeops.dev/sidekick/grpc/token"
+	"kubeops.dev/sidekick/pkg/snapshotserver"
 
 	kubesliceapi "github.com/kubeslice/worker-operator/api/v1beta1"
 	corev1 "k8s.io/api/core/v1"
@@ -74,11 +75,6 @@ const (
 	// it is set by the backup tooling and is the plaintext the grant is built from.
 	envSnapshotName = "SNAPSHOT_NAME"
 
-	// signingSecretKey / snapshotSecretKey are the data keys under which the
-	// per-Sidekick token signing key and snapshot-name encryption key live in the
-	// Secret.
-	signingSecretKey  = "signing-key"
-	snapshotSecretKey = "snapshot-key"
 	// signingKeyBytes is the length of a freshly generated key.
 	signingKeyBytes = 32
 
@@ -108,7 +104,7 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 	// ensureGRPCKeys), loaded per request from the API server.
 	r.grpcOnce.Do(func() {
 		go func() {
-			if err := RunGRPCServer(r.Client); err != nil {
+			if err := snapshotserver.RunGRPCServer(r.Client); err != nil {
 				klog.Errorf("GRPC Server failed: %v", err)
 			}
 		}()
@@ -983,11 +979,6 @@ func (r *SidekickReconciler) terminateManifestWork(ctx context.Context, sidekick
 	return err
 }
 
-// signingSecretName is the name of the Secret holding a Sidekick's signing key.
-func signingSecretName(sidekickName string) string {
-	return sidekickName + "-grpc-key"
-}
-
 // ensureGRPCKeys returns the Sidekick's two gRPC secrets — the token signing key
 // and the snapshot-name encryption key — creating them with fresh random values
 // on first use and storing both in the per-Sidekick Secret.
@@ -1003,13 +994,13 @@ func signingSecretName(sidekickName string) string {
 // created, so the archiver's env (and thus the pod spec) is stable across
 // reconciles.
 func (r *SidekickReconciler) ensureGRPCKeys(ctx context.Context, sidekick *appsv1alpha1.Sidekick) (signingKey, snapshotKey string, err error) {
-	name := signingSecretName(sidekick.Name)
+	name := snapshotserver.SigningSecretName(sidekick.Name)
 	key := types.NamespacedName{Namespace: sidekick.Namespace, Name: name}
 
 	var existing corev1.Secret
 	err = r.Get(ctx, key, &existing)
-	if err == nil && len(existing.Data[signingSecretKey]) > 0 && len(existing.Data[snapshotSecretKey]) > 0 {
-		return string(existing.Data[signingSecretKey]), string(existing.Data[snapshotSecretKey]), nil
+	if err == nil && len(existing.Data[snapshotserver.SigningSecretKey]) > 0 && len(existing.Data[snapshotserver.SnapshotSecretKey]) > 0 {
+		return string(existing.Data[snapshotserver.SigningSecretKey]), string(existing.Data[snapshotserver.SnapshotSecretKey]), nil
 	}
 	if err != nil && !errors.IsNotFound(err) {
 		return "", "", err
@@ -1037,11 +1028,11 @@ func (r *SidekickReconciler) ensureGRPCKeys(ctx context.Context, sidekick *appsv
 		}
 		// Only populate missing keys so a concurrent reconcile that already wrote
 		// a value is never overwritten (which would invalidate live tokens/grants).
-		if len(s.Data[signingSecretKey]) == 0 {
-			s.Data[signingSecretKey] = []byte(freshSigning)
+		if len(s.Data[snapshotserver.SigningSecretKey]) == 0 {
+			s.Data[snapshotserver.SigningSecretKey] = []byte(freshSigning)
 		}
-		if len(s.Data[snapshotSecretKey]) == 0 {
-			s.Data[snapshotSecretKey] = []byte(freshSnapshot)
+		if len(s.Data[snapshotserver.SnapshotSecretKey]) == 0 {
+			s.Data[snapshotserver.SnapshotSecretKey] = []byte(freshSnapshot)
 		}
 		return s
 	})
@@ -1053,10 +1044,10 @@ func (r *SidekickReconciler) ensureGRPCKeys(ctx context.Context, sidekick *appsv
 	if err = r.Get(ctx, key, &existing); err != nil {
 		return "", "", err
 	}
-	if len(existing.Data[signingSecretKey]) == 0 || len(existing.Data[snapshotSecretKey]) == 0 {
+	if len(existing.Data[snapshotserver.SigningSecretKey]) == 0 || len(existing.Data[snapshotserver.SnapshotSecretKey]) == 0 {
 		return "", "", fmt.Errorf("grpc keys empty in secret %s/%s after ensure", sidekick.Namespace, name)
 	}
-	return string(existing.Data[signingSecretKey]), string(existing.Data[snapshotSecretKey]), nil
+	return string(existing.Data[snapshotserver.SigningSecretKey]), string(existing.Data[snapshotserver.SnapshotSecretKey]), nil
 }
 
 // randomKey returns a high-entropy base64url-encoded key of signingKeyBytes bytes.

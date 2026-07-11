@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package apps
+package snapshotserver
 
 import (
 	"context"
@@ -75,10 +75,10 @@ func startTestServer(t *testing.T, objs ...client.Object) (addr string, stop fun
 // (token auth) and the snapshot key (snapshot-grant authorization).
 func signingSecret() *corev1.Secret {
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: signingSecretName(testSidekick), Namespace: testNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: SigningSecretName(testSidekick), Namespace: testNamespace},
 		Data: map[string][]byte{
-			signingSecretKey:  []byte(testKey),
-			snapshotSecretKey: []byte(testSnapshotKey),
+			SigningSecretKey:  []byte(testKey),
+			SnapshotSecretKey: []byte(testSnapshotKey),
 		},
 	}
 }

@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package apps
+package snapshotserver
 
 import (
 	"context"
@@ -176,14 +176,14 @@ func (s *CommandServer) grpcKeys(ctx context.Context, namespace, sidekickName st
 	var secret corev1.Secret
 	if err = s.KBClient.Get(ctx, types.NamespacedName{
 		Namespace: namespace,
-		Name:      signingSecretName(sidekickName),
+		Name:      SigningSecretName(sidekickName),
 	}, &secret); err != nil {
 		return "", "", err
 	}
-	sign := secret.Data[signingSecretKey]
-	snap := secret.Data[snapshotSecretKey]
+	sign := secret.Data[SigningSecretKey]
+	snap := secret.Data[SnapshotSecretKey]
 	if len(sign) == 0 || len(snap) == 0 {
-		return "", "", fmt.Errorf("grpc keys missing in secret %s/%s", namespace, signingSecretName(sidekickName))
+		return "", "", fmt.Errorf("grpc keys missing in secret %s/%s", namespace, SigningSecretName(sidekickName))
 	}
 	return string(sign), string(snap), nil
 }
