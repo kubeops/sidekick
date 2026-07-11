@@ -37,7 +37,8 @@ func (r *SidekickReconciler) handleSidekickFinalizer(ctx context.Context, sideki
 		}
 	}
 
-	_, err := cu.CreateOrPatch(ctx, r.Client, sidekick,
+	_, err := cu.CreateOrPatch(
+		ctx, r.Client, sidekick,
 		func(in client.Object, createOp bool) client.Object {
 			sk := in.(*appsv1alpha1.Sidekick)
 			sk.ObjectMeta = core_util.AddFinalizer(sk.ObjectMeta, getFinalizerName())

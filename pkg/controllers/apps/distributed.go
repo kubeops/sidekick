@@ -796,7 +796,8 @@ func (r *SidekickReconciler) deleteMW(ctx context.Context, mw *apiworkv1.Manifes
 }
 
 func (r *SidekickReconciler) setMWDeletionInitiatorAnnotation(ctx context.Context, mw *apiworkv1.ManifestWork) error {
-	_, err := cu.CreateOrPatch(ctx, r.Client, mw,
+	_, err := cu.CreateOrPatch(
+		ctx, r.Client, mw,
 		func(in client.Object, createOp bool) client.Object {
 			po := in.(*apiworkv1.ManifestWork)
 			if po.Annotations == nil {
@@ -905,7 +906,8 @@ func (r *SidekickReconciler) handleDistributedSidekickFinalizer(ctx context.Cont
 		}
 	}
 
-	_, err := cu.CreateOrPatch(ctx, r.Client, sidekick,
+	_, err := cu.CreateOrPatch(
+		ctx, r.Client, sidekick,
 		func(in client.Object, createOp bool) client.Object {
 			sk := in.(*appsv1alpha1.Sidekick)
 			sk.ObjectMeta = core_util.AddFinalizer(sk.ObjectMeta, getFinalizerName())
@@ -932,7 +934,8 @@ func (r *SidekickReconciler) terminateManifestWork(ctx context.Context, sidekick
 		}
 	}
 
-	_, err = cu.CreateOrPatch(context.TODO(), r.Client, sidekick,
+	_, err = cu.CreateOrPatch(
+		context.TODO(), r.Client, sidekick,
 		func(in client.Object, createOp bool) client.Object {
 			sk := in.(*appsv1alpha1.Sidekick)
 			sk.ObjectMeta = core_util.RemoveFinalizer(sk.ObjectMeta, getFinalizerName())
