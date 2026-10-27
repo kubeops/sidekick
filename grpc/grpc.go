@@ -54,4 +54,10 @@ type LogInfo struct {
 	LogLimit  int    `json:"logLimit"`
 	StartTime string `json:"startTime"`
 	EndTime   string `json:"endTime"`
+	// Component is the Snapshot component the update is recorded in: "log"
+	// (the default when empty, MariaDB binlogs) or "wal" (Postgres WAL).
+	// Omitted when empty so existing clients bind to the same payload bytes.
+	Component string `json:"component,omitempty"`
+	// Lsn is the last archived LSN, recorded in the component's LogStats.Lsn.
+	Lsn string `json:"lsn,omitempty"`
 }

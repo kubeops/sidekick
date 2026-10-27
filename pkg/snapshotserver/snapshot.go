@@ -32,6 +32,7 @@ import (
 
 const (
 	ComponentLog = "log"
+	ComponentWal = "wal"
 
 	// maxLogLimit caps the caller-supplied history limit. Without an upper bound
 	// a hostile caller could set a huge limit so trimming never fires and the
@@ -41,7 +42,7 @@ const (
 	maxLogBytes = 4096
 )
 
-func (r *CommandServer) InitSnapshotComponentsStatus(ctx context.Context, name, namespace string) (*storageapi.Snapshot, error) {
+func (r *CommandServer) InitSnapshotComponentsStatus(ctx context.Context, name, namespace, componentName string) (*storageapi.Snapshot, error) {
 	var snapshot storageapi.Snapshot
 	err := r.KBClient.Get(ctx, client.ObjectKey{
 		Namespace: namespace,
@@ -55,12 +56,12 @@ func (r *CommandServer) InitSnapshotComponentsStatus(ctx context.Context, name, 
 		snapshot.Status.Components = make(map[string]storageapi.Component)
 	}
 
-	compLog := snapshot.Status.Components[ComponentLog]
+	compLog := snapshot.Status.Components[componentName]
 	compLog.Phase = storageapi.ComponentPhaseRunning
 	if compLog.LogStats == nil {
 		compLog.LogStats = &storageapi.LogStats{}
 	}
-	snapshot.Status.Components[ComponentLog] = compLog
+	snapshot.Status.Components[componentName] = compLog
 
 	if err := r.updateSnapshotStatus(ctx, &snapshot); err != nil {
 		return nil, fmt.Errorf("failed to update snapshot status :%w", err)
@@ -121,13 +122,18 @@ func (s *CommandServer) UpdateSnapshot(ctx context.Context, name, namespace stri
 		info.Log = info.Log[:maxLogBytes]
 	}
 
-	snapshot, err := s.InitSnapshotComponentsStatus(ctx, name, namespace)
+	componentName, err := logComponentName(info.Component)
+	if err != nil {
+		return err
+	}
+
+	snapshot, err := s.InitSnapshotComponentsStatus(ctx, name, namespace, componentName)
 	if err != nil {
 		klog.Errorf("[grpc] failed to initialize snapshot components status: %v", err)
 		return err
 	}
 
-	component := snapshot.Status.Components[ComponentLog]
+	component := snapshot.Status.Components[componentName]
 	if component.LogStats == nil {
 		component.LogStats = &storageapi.LogStats{}
 	}
@@ -140,6 +146,9 @@ func (s *CommandServer) UpdateSnapshot(ctx context.Context, name, namespace stri
 		Start: pointer.StringP(info.StartTime),
 		End:   pointer.StringP(info.EndTime),
 	}
+	if info.Lsn != "" {
+		component.LogStats.Lsn = pointer.StringP(info.Lsn)
+	}
 	if info.Type == "success" {
 		component.LogStats.TotalSucceededCount += 1
 		component.LogStats.End = pointer.StringP(info.EndTime)
@@ -151,6 +160,20 @@ func (s *CommandServer) UpdateSnapshot(ctx context.Context, name, namespace stri
 		component.LogStats.LastFailedStats = append(component.LogStats.LastFailedStats, newLog)
 		trimLogHistory(&component.LogStats.LastFailedStats, info.LogLimit)
 	}
-	snapshot.Status.Components[ComponentLog] = component
+	snapshot.Status.Components[componentName] = component
 	return s.updateSnapshotStatus(ctx, snapshot)
+}
+
+// logComponentName returns the Snapshot component a log update is recorded in.
+// Only the log components are allowed, so a caller cannot overwrite the status
+// of another component (for example the full backup's) through this command.
+func logComponentName(c string) (string, error) {
+	switch c {
+	case "", ComponentLog:
+		return ComponentLog, nil
+	case ComponentWal:
+		return ComponentWal, nil
+	default:
+		return "", fmt.Errorf("unsupported snapshot component %q", c)
+	}
 }
