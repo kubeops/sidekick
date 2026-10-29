@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
 	sidekickgrpc "kubeops.dev/sidekick/grpc"
 
@@ -141,17 +143,26 @@ func (s *CommandServer) UpdateSnapshot(ctx context.Context, name, namespace stri
 	if component.LogStats.Start == nil {
 		component.LogStats.Start = pointer.StringP(info.StartTime)
 	}
-	component.LogStats.End = pointer.StringP(info.EndTime)
 	newLog := storageapi.Log{
 		Start: pointer.StringP(info.StartTime),
 		End:   pointer.StringP(info.EndTime),
 	}
-	if info.Lsn != "" {
-		component.LogStats.Lsn = pointer.StringP(info.Lsn)
+	if componentName == ComponentWal {
+		// PITR to a time past the end restores to End/Lsn, so they must only
+		// ever point at WAL that is already in the bucket: move them on a
+		// successful update, and never backward.
+		if info.Type == "success" && walPositionAdvances(component.LogStats.Lsn, info.Lsn) {
+			component.LogStats.End = pointer.StringP(info.EndTime)
+			component.LogStats.Lsn = pointer.StringP(info.Lsn)
+		}
+	} else {
+		component.LogStats.End = pointer.StringP(info.EndTime)
+		if info.Lsn != "" {
+			component.LogStats.Lsn = pointer.StringP(info.Lsn)
+		}
 	}
 	if info.Type == "success" {
 		component.LogStats.TotalSucceededCount += 1
-		component.LogStats.End = pointer.StringP(info.EndTime)
 		component.LogStats.LastSucceededStats = append(component.LogStats.LastSucceededStats, newLog)
 		trimLogHistory(&component.LogStats.LastSucceededStats, info.LogLimit)
 	} else {
@@ -162,6 +173,42 @@ func (s *CommandServer) UpdateSnapshot(ctx context.Context, name, namespace stri
 	}
 	snapshot.Status.Components[componentName] = component
 	return s.updateSnapshotStatus(ctx, snapshot)
+}
+
+// walPositionAdvances reports whether the WAL position next can replace the
+// recorded one: it must parse, and it must not be lower than the current one.
+// LSNs keep increasing across timeline switches, so this holds after a failover.
+func walPositionAdvances(current *string, next string) bool {
+	n, err := parseLSN(next)
+	if err != nil {
+		klog.Warningf("[grpc] ignoring wal position %q: %v", next, err)
+		return false
+	}
+	if current == nil || *current == "" {
+		return true
+	}
+	c, err := parseLSN(*current)
+	if err != nil {
+		return true
+	}
+	return n >= c
+}
+
+// parseLSN parses a Postgres LSN in its text form "X/Y" (two hex numbers).
+func parseLSN(lsn string) (uint64, error) {
+	hi, lo, ok := strings.Cut(lsn, "/")
+	if !ok {
+		return 0, fmt.Errorf("invalid lsn %q", lsn)
+	}
+	h, err := strconv.ParseUint(hi, 16, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid lsn %q: %w", lsn, err)
+	}
+	l, err := strconv.ParseUint(lo, 16, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid lsn %q: %w", lsn, err)
+	}
+	return h<<32 | l, nil
 }
 
 // logComponentName returns the Snapshot component a log update is recorded in.

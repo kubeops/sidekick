@@ -118,3 +118,55 @@ func TestBindingPayload_UnchangedWithoutNewFields(t *testing.T) {
 		t.Fatalf("payload changed:\n got %s\nwant %s", got, want)
 	}
 }
+
+func TestUpdateSnapshot_WalPositionNeverMovesBackward(t *testing.T) {
+	s := newTestCommandServer(t)
+	update := func(typ, end, lsn string) {
+		t.Helper()
+		info := sidekickgrpc.LogInfo{Type: typ, LogLimit: 5, StartTime: "t0", EndTime: end, Component: ComponentWal, Lsn: lsn, Log: "err"}
+		if err := s.UpdateSnapshot(context.TODO(), testSnapshot, testNamespace, info); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+	}
+	check := func(end, lsn string) {
+		t.Helper()
+		ls := getTestSnapshot(t, s).Status.Components[ComponentWal].LogStats
+		if ls == nil || ls.End == nil || ls.Lsn == nil || *ls.End != end || *ls.Lsn != lsn {
+			t.Fatalf("want end=%s lsn=%s, got %+v", end, lsn, ls)
+		}
+	}
+
+	update("success", "t2", "0/A000060")
+	check("t2", "0/A000060")
+	// a lower position (late or reordered update) is ignored
+	update("success", "t1", "0/9FFFFF0")
+	check("t2", "0/A000060")
+	// a higher position on a later timeline moves it; compared as numbers, not text
+	update("success", "t3", "1/00000028")
+	check("t3", "1/00000028")
+	// a failure never moves it
+	update("failed", "t4", "2/0")
+	check("t3", "1/00000028")
+	// an unparsable position is ignored
+	update("success", "t5", "bogus")
+	check("t3", "1/00000028")
+
+	ls := getTestSnapshot(t, s).Status.Components[ComponentWal].LogStats
+	if ls.TotalSucceededCount != 4 || ls.TotalFailedCount != 1 {
+		t.Fatalf("counts: succeeded=%d failed=%d", ls.TotalSucceededCount, ls.TotalFailedCount)
+	}
+}
+
+func TestParseLSN(t *testing.T) {
+	for in, want := range map[string]uint64{"0/0": 0, "0/A000060": 0xA000060, "1/28": 1<<32 | 0x28, "FFFFFFFF/FFFFFFFF": ^uint64(0)} {
+		got, err := parseLSN(in)
+		if err != nil || got != want {
+			t.Fatalf("parseLSN(%q) = %x, %v; want %x", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "0", "x/1", "1/", "100000000/0"} {
+		if _, err := parseLSN(in); err == nil {
+			t.Fatalf("parseLSN(%q): expected an error", in)
+		}
+	}
+}
