@@ -72,13 +72,19 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 				klog.Errorf("GRPC Server failed: %v", err)
 			}
 		}()
-
-		// Expose the gRPC server on the kubeslice slice so wal-g sidecars in
-		// remote clusters can reach it.
-		if err := r.ensureServiceExport(ctx, &sidekick); err != nil {
-			klog.Errorf("failed to ensure ServiceExport for gRPC server: %v", err)
-		}
 	})
+
+	// Only a sidekick with a wal-g container reports to the gRPC server. Others,
+	// such as a WAL restorer, run without any of the gRPC wiring.
+	reportsSnapshot := getSidekickContainer(&sidekick) != nil
+	if reportsSnapshot {
+		// Expose the gRPC server on the kubeslice slice so wal-g sidecars in
+		// remote clusters can reach it. Ensured on every reconcile: the slice name
+		// comes from this sidekick, and a failure must be retried.
+		if err := r.ensureServiceExport(ctx, &sidekick); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to ensure ServiceExport for gRPC server: %w", err)
+		}
+	}
 
 	err := r.handleDistributedSidekickFinalizer(ctx, &sidekick)
 	if err != nil {
@@ -219,20 +225,20 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 	//     archiver may update with the snapshot key, so the archiver can only ever
 	//     update that Snapshot (it cannot read or forge the grant).
 	// Both values are stable across reconciles, so the pod spec does not drift.
-	signingKey, snapshotKey, err := r.ensureGRPCKeys(ctx, &sidekick)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if err = r.setSigningKey(&sidekick, signingKey); err != nil {
-		return ctrl.Result{}, err
-	}
-	if err = r.setSnapshotGrant(&sidekick, snapshotKey); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	err = r.setGRPCAddress(&sidekick)
-	if err != nil {
-		return ctrl.Result{}, err
+	if reportsSnapshot {
+		signingKey, snapshotKey, err := r.ensureGRPCKeys(ctx, &sidekick)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if err = r.setSigningKey(&sidekick, signingKey); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err = r.setSnapshotGrant(&sidekick, snapshotKey); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err = r.setGRPCAddress(&sidekick); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	pod := corev1.Pod{
