@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
 	sidekickgrpc "kubeops.dev/sidekick/grpc"
 
@@ -32,6 +34,7 @@ import (
 
 const (
 	ComponentLog = "log"
+	ComponentWal = "wal"
 
 	// maxLogLimit caps the caller-supplied history limit. Without an upper bound
 	// a hostile caller could set a huge limit so trimming never fires and the
@@ -41,7 +44,7 @@ const (
 	maxLogBytes = 4096
 )
 
-func (r *CommandServer) InitSnapshotComponentsStatus(ctx context.Context, name, namespace string) (*storageapi.Snapshot, error) {
+func (r *CommandServer) InitSnapshotComponentsStatus(ctx context.Context, name, namespace, componentName string) (*storageapi.Snapshot, error) {
 	var snapshot storageapi.Snapshot
 	err := r.KBClient.Get(ctx, client.ObjectKey{
 		Namespace: namespace,
@@ -55,12 +58,12 @@ func (r *CommandServer) InitSnapshotComponentsStatus(ctx context.Context, name, 
 		snapshot.Status.Components = make(map[string]storageapi.Component)
 	}
 
-	compLog := snapshot.Status.Components[ComponentLog]
+	compLog := snapshot.Status.Components[componentName]
 	compLog.Phase = storageapi.ComponentPhaseRunning
 	if compLog.LogStats == nil {
 		compLog.LogStats = &storageapi.LogStats{}
 	}
-	snapshot.Status.Components[ComponentLog] = compLog
+	snapshot.Status.Components[componentName] = compLog
 
 	if err := r.updateSnapshotStatus(ctx, &snapshot); err != nil {
 		return nil, fmt.Errorf("failed to update snapshot status :%w", err)
@@ -121,28 +124,54 @@ func (s *CommandServer) UpdateSnapshot(ctx context.Context, name, namespace stri
 		info.Log = info.Log[:maxLogBytes]
 	}
 
-	snapshot, err := s.InitSnapshotComponentsStatus(ctx, name, namespace)
+	componentName, err := logComponentName(info.Component)
+	if err != nil {
+		return err
+	}
+
+	snapshot, err := s.InitSnapshotComponentsStatus(ctx, name, namespace, componentName)
 	if err != nil {
 		klog.Errorf("[grpc] failed to initialize snapshot components status: %v", err)
 		return err
 	}
 
-	component := snapshot.Status.Components[ComponentLog]
+	component := snapshot.Status.Components[componentName]
 	if component.LogStats == nil {
 		component.LogStats = &storageapi.LogStats{}
 	}
 
-	if component.LogStats.Start == nil {
-		component.LogStats.Start = pointer.StringP(info.StartTime)
-	}
-	component.LogStats.End = pointer.StringP(info.EndTime)
 	newLog := storageapi.Log{
 		Start: pointer.StringP(info.StartTime),
 		End:   pointer.StringP(info.EndTime),
 	}
+	if componentName == ComponentWal {
+		// Start, End and Lsn are the archived range PITR restores within, so
+		// they come only from a successful update and point at WAL that is
+		// already in the bucket; End and Lsn never move backward.
+		commitTime := info.CommitTime
+		if commitTime == "" {
+			commitTime = info.EndTime
+		}
+		if info.Type == "success" {
+			if component.LogStats.Start == nil {
+				component.LogStats.Start = pointer.StringP(commitTime)
+			}
+			if walPositionAdvances(component.LogStats.Lsn, info.Lsn) {
+				component.LogStats.End = pointer.StringP(commitTime)
+				component.LogStats.Lsn = pointer.StringP(info.Lsn)
+			}
+		}
+	} else {
+		if component.LogStats.Start == nil {
+			component.LogStats.Start = pointer.StringP(info.StartTime)
+		}
+		component.LogStats.End = pointer.StringP(info.EndTime)
+		if info.Lsn != "" {
+			component.LogStats.Lsn = pointer.StringP(info.Lsn)
+		}
+	}
 	if info.Type == "success" {
 		component.LogStats.TotalSucceededCount += 1
-		component.LogStats.End = pointer.StringP(info.EndTime)
 		component.LogStats.LastSucceededStats = append(component.LogStats.LastSucceededStats, newLog)
 		trimLogHistory(&component.LogStats.LastSucceededStats, info.LogLimit)
 	} else {
@@ -151,6 +180,56 @@ func (s *CommandServer) UpdateSnapshot(ctx context.Context, name, namespace stri
 		component.LogStats.LastFailedStats = append(component.LogStats.LastFailedStats, newLog)
 		trimLogHistory(&component.LogStats.LastFailedStats, info.LogLimit)
 	}
-	snapshot.Status.Components[ComponentLog] = component
+	snapshot.Status.Components[componentName] = component
 	return s.updateSnapshotStatus(ctx, snapshot)
+}
+
+// walPositionAdvances reports whether the WAL position next can replace the
+// recorded one: it must parse, and it must not be lower than the current one.
+// LSNs keep increasing across timeline switches, so this holds after a failover.
+func walPositionAdvances(current *string, next string) bool {
+	n, err := parseLSN(next)
+	if err != nil {
+		klog.Warningf("[grpc] ignoring wal position %q: %v", next, err)
+		return false
+	}
+	if current == nil || *current == "" {
+		return true
+	}
+	c, err := parseLSN(*current)
+	if err != nil {
+		return true
+	}
+	return n >= c
+}
+
+// parseLSN parses a Postgres LSN in its text form "X/Y" (two hex numbers).
+func parseLSN(lsn string) (uint64, error) {
+	hi, lo, ok := strings.Cut(lsn, "/")
+	if !ok {
+		return 0, fmt.Errorf("invalid lsn %q", lsn)
+	}
+	h, err := strconv.ParseUint(hi, 16, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid lsn %q: %w", lsn, err)
+	}
+	l, err := strconv.ParseUint(lo, 16, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid lsn %q: %w", lsn, err)
+	}
+	return h<<32 | l, nil
+}
+
+// logComponentName returns the Snapshot component a log update is recorded in.
+// Only the log components are allowed, so a caller cannot overwrite the status
+// of another component (for example the full backup's) through this command.
+func logComponentName(c string) (string, error) {
+	switch c {
+	case "", ComponentLog:
+		return ComponentLog, nil
+	case ComponentWal:
+		return ComponentWal, nil
+	default:
+		return "", fmt.Errorf("unsupported snapshot component %q", c)
+	}
 }
