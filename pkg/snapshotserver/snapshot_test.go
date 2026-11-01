@@ -170,3 +170,36 @@ func TestParseLSN(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateSnapshot_WalCommitTime(t *testing.T) {
+	s := newTestCommandServer(t)
+	update := func(info sidekickgrpc.LogInfo) {
+		t.Helper()
+		info.Component, info.LogLimit = ComponentWal, 5
+		if err := s.UpdateSnapshot(context.TODO(), testSnapshot, testNamespace, info); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+	}
+
+	// a failure before any success sets no range
+	update(sidekickgrpc.LogInfo{Type: "failed", StartTime: "w1", EndTime: "w1", Log: "err"})
+	ls := getTestSnapshot(t, s).Status.Components[ComponentWal].LogStats
+	if ls.Start != nil || ls.End != nil || ls.Lsn != nil {
+		t.Fatalf("failure set the range: %+v", ls)
+	}
+
+	// the range comes from the commit time, the history from the push window
+	update(sidekickgrpc.LogInfo{Type: "success", StartTime: "w2", EndTime: "w3", CommitTime: "c1", Lsn: "0/A000060"})
+	update(sidekickgrpc.LogInfo{Type: "success", StartTime: "w4", EndTime: "w5", CommitTime: "c2", Lsn: "0/B000060"})
+	ls = getTestSnapshot(t, s).Status.Components[ComponentWal].LogStats
+	if *ls.Start != "c1" || *ls.End != "c2" || *ls.Lsn != "0/B000060" {
+		t.Fatalf("range: start=%v end=%v lsn=%v", *ls.Start, *ls.End, *ls.Lsn)
+	}
+	last := ls.LastSucceededStats[len(ls.LastSucceededStats)-1]
+	if *last.Start != "w4" || *last.End != "w5" {
+		t.Fatalf("history entry: %v %v", *last.Start, *last.End)
+	}
+	if f := ls.LastFailedStats[0]; *f.End != "w1" || f.Error != "err" {
+		t.Fatalf("failed entry: %+v", f)
+	}
+}

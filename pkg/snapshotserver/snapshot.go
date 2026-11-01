@@ -140,22 +140,31 @@ func (s *CommandServer) UpdateSnapshot(ctx context.Context, name, namespace stri
 		component.LogStats = &storageapi.LogStats{}
 	}
 
-	if component.LogStats.Start == nil {
-		component.LogStats.Start = pointer.StringP(info.StartTime)
-	}
 	newLog := storageapi.Log{
 		Start: pointer.StringP(info.StartTime),
 		End:   pointer.StringP(info.EndTime),
 	}
 	if componentName == ComponentWal {
-		// PITR to a time past the end restores to End/Lsn, so they must only
-		// ever point at WAL that is already in the bucket: move them on a
-		// successful update, and never backward.
-		if info.Type == "success" && walPositionAdvances(component.LogStats.Lsn, info.Lsn) {
-			component.LogStats.End = pointer.StringP(info.EndTime)
-			component.LogStats.Lsn = pointer.StringP(info.Lsn)
+		// Start, End and Lsn are the archived range PITR restores within, so
+		// they come only from a successful update and point at WAL that is
+		// already in the bucket; End and Lsn never move backward.
+		commitTime := info.CommitTime
+		if commitTime == "" {
+			commitTime = info.EndTime
+		}
+		if info.Type == "success" {
+			if component.LogStats.Start == nil {
+				component.LogStats.Start = pointer.StringP(commitTime)
+			}
+			if walPositionAdvances(component.LogStats.Lsn, info.Lsn) {
+				component.LogStats.End = pointer.StringP(commitTime)
+				component.LogStats.Lsn = pointer.StringP(info.Lsn)
+			}
 		}
 	} else {
+		if component.LogStats.Start == nil {
+			component.LogStats.Start = pointer.StringP(info.StartTime)
+		}
 		component.LogStats.End = pointer.StringP(info.EndTime)
 		if info.Lsn != "" {
 			component.LogStats.Lsn = pointer.StringP(info.Lsn)

@@ -60,4 +60,9 @@ type LogInfo struct {
 	Component string `json:"component,omitempty"`
 	// Lsn is the last archived LSN, recorded in the component's LogStats.Lsn.
 	Lsn string `json:"lsn,omitempty"`
+	// CommitTime is the time of the last archived commit, recorded in the
+	// component's LogStats.End (the PITR bound). When it is set, StartTime and
+	// EndTime are the wall-clock window of the push, as in the history entry.
+	// When it is empty, EndTime is used, so older clients keep working.
+	CommitTime string `json:"commitTime,omitempty"`
 }
