@@ -880,18 +880,25 @@ func getDistributedContainerRestartCounts(mw *apiworkv1.ManifestWork) int32 {
 
 	for _, value := range feedback.Values {
 		switch value.Name {
-		case "ContainerRestartCount":
-			if value.Value.JsonRaw != nil {
-				restartCounter += extractRestartCountFromJSONRaw(value.Value.JsonRaw)
-			}
-		case "InitContainerRestartCount":
-			if value.Value.JsonRaw != nil {
-				restartCounter += extractRestartCountFromJSONRaw(value.Value.JsonRaw)
-			}
+		case "ContainerRestartCount", "InitContainerRestartCount":
+			restartCounter += extractRestartCount(value.Value)
 		}
 	}
 
 	return restartCounter
+}
+
+// extractRestartCount reads a restart count from status feedback. The work
+// agent returns a single match of the [*] JSONPath as an Integer, and
+// several matches as a JSON array.
+func extractRestartCount(value apiworkv1.FieldValue) int32 {
+	switch {
+	case value.Integer != nil:
+		return int32(*value.Integer)
+	case value.JsonRaw != nil:
+		return extractRestartCountFromJSONRaw(value.JsonRaw)
+	}
+	return 0
 }
 
 func extractRestartCountFromJSONRaw(value *string) int32 {
