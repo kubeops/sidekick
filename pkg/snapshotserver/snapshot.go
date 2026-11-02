@@ -26,6 +26,7 @@ import (
 	sidekickgrpc "kubeops.dev/sidekick/grpc"
 
 	"gomodules.xyz/pointer"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	kmc "kmodules.xyz/client-go/client"
 	storageapi "kubestash.dev/apimachinery/apis/storage/v1alpha1"
@@ -35,6 +36,10 @@ import (
 const (
 	ComponentLog = "log"
 	ComponentWal = "wal"
+
+	// AnnotationWalTimeline records the timeline of the wal component's
+	// LogStats.Lsn, which KubeStash's LogStats has no field for.
+	AnnotationWalTimeline = "sidekick.kubeops.dev/wal-timeline"
 
 	// maxLogLimit caps the caller-supplied history limit. Without an upper bound
 	// a hostile caller could set a huge limit so trimming never fires and the
@@ -140,6 +145,7 @@ func (s *CommandServer) UpdateSnapshot(ctx context.Context, name, namespace stri
 		component.LogStats = &storageapi.LogStats{}
 	}
 
+	var recordTimeline uint32
 	newLog := storageapi.Log{
 		Start: pointer.StringP(info.StartTime),
 		End:   pointer.StringP(info.EndTime),
@@ -156,9 +162,11 @@ func (s *CommandServer) UpdateSnapshot(ctx context.Context, name, namespace stri
 			if component.LogStats.Start == nil {
 				component.LogStats.Start = pointer.StringP(commitTime)
 			}
-			if walPositionAdvances(component.LogStats.Lsn, info.Lsn) {
+			current := walPosition{timeline: storedWalTimeline(snapshot), lsn: component.LogStats.Lsn}
+			if walPositionAdvances(current, info.Timeline, info.Lsn) {
 				component.LogStats.End = pointer.StringP(commitTime)
 				component.LogStats.Lsn = pointer.StringP(info.Lsn)
+				recordTimeline = info.Timeline
 			}
 		}
 	} else {
@@ -181,22 +189,84 @@ func (s *CommandServer) UpdateSnapshot(ctx context.Context, name, namespace stri
 		trimLogHistory(&component.LogStats.LastFailedStats, info.LogLimit)
 	}
 	snapshot.Status.Components[componentName] = component
-	return s.updateSnapshotStatus(ctx, snapshot)
+	if err := s.updateSnapshotStatus(ctx, snapshot); err != nil {
+		return err
+	}
+	// The timeline goes after the status: if this patch fails, the stored
+	// timeline is older than Lsn's, and the next report on the new timeline
+	// still wins. Written first, a failed status patch would leave the new
+	// timeline next to the old timeline's higher Lsn and block every report.
+	if recordTimeline != 0 && storedWalTimeline(snapshot) != recordTimeline {
+		return s.recordWalTimeline(ctx, snapshot, recordTimeline)
+	}
+	return nil
 }
 
-// walPositionAdvances reports whether the WAL position next can replace the
-// recorded one: it must parse, and it must not be lower than the current one.
-// LSNs keep increasing across timeline switches, so this holds after a failover.
-func walPositionAdvances(current *string, next string) bool {
+func (s *CommandServer) recordWalTimeline(ctx context.Context, snapshot *storageapi.Snapshot, timeline uint32) error {
+	patch, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{
+			"annotations": map[string]string{AnnotationWalTimeline: strconv.FormatUint(uint64(timeline), 10)},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if err := s.KBClient.Patch(ctx, snapshot, client.RawPatch(types.MergePatchType, patch)); err != nil {
+		return fmt.Errorf("failed to record wal timeline %d on snapshot %s/%s: %w", timeline, snapshot.Namespace, snapshot.Name, err)
+	}
+	return nil
+}
+
+// storedWalTimeline returns the timeline recorded with the wal component's Lsn,
+// or 0 when none is recorded.
+func storedWalTimeline(snapshot *storageapi.Snapshot) uint32 {
+	v, ok := snapshot.Annotations[AnnotationWalTimeline]
+	if !ok {
+		return 0
+	}
+	tl, err := strconv.ParseUint(v, 10, 32)
+	if err != nil {
+		klog.Warningf("[grpc] ignoring invalid %s=%q on snapshot %s/%s", AnnotationWalTimeline, v, snapshot.Namespace, snapshot.Name)
+		return 0
+	}
+	return uint32(tl)
+}
+
+// walPosition is the recorded end of the archived WAL. timeline is 0 when it
+// is not known.
+type walPosition struct {
+	timeline uint32
+	lsn      *string
+}
+
+// walPositionAdvances reports whether the WAL position (nextTimeline, next) can
+// replace the recorded one. next must parse. A later timeline always wins and
+// an earlier one never does: a failover can start the new timeline below the
+// position the old primary archived, and a cut-off old primary can still push
+// to its abandoned timeline. Within one timeline the LSN must not go down.
+//
+// A zero timeline is unknown. When next has none (an older client), only LSNs
+// are compared. When the recorded one has none (recorded by an older server),
+// it is taken as timeline 1, so a report from any later timeline is accepted.
+func walPositionAdvances(current walPosition, nextTimeline uint32, next string) bool {
 	n, err := parseLSN(next)
 	if err != nil {
 		klog.Warningf("[grpc] ignoring wal position %q: %v", next, err)
 		return false
 	}
-	if current == nil || *current == "" {
+	if current.lsn == nil || *current.lsn == "" {
 		return true
 	}
-	c, err := parseLSN(*current)
+	if nextTimeline != 0 {
+		curTimeline := current.timeline
+		if curTimeline == 0 {
+			curTimeline = 1
+		}
+		if nextTimeline != curTimeline {
+			return nextTimeline > curTimeline
+		}
+	}
+	c, err := parseLSN(*current.lsn)
 	if err != nil {
 		return true
 	}

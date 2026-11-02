@@ -65,4 +65,10 @@ type LogInfo struct {
 	// EndTime are the wall-clock window of the push, as in the history entry.
 	// When it is empty, EndTime is used, so older clients keep working.
 	CommitTime string `json:"commitTime,omitempty"`
+	// Timeline is the Postgres timeline of the WAL at Lsn. A failover starts a
+	// new timeline at the point the promoted standby had replayed to, which can
+	// be below what the old primary had archived, so positions are compared by
+	// timeline first and by Lsn only within one timeline. Zero means unknown
+	// (an older client), and only Lsn is compared.
+	Timeline uint32 `json:"timeline,omitempty"`
 }

@@ -203,3 +203,71 @@ func TestUpdateSnapshot_WalCommitTime(t *testing.T) {
 		t.Fatalf("failed entry: %+v", f)
 	}
 }
+
+func TestUpdateSnapshot_WalPositionAcrossTimelines(t *testing.T) {
+	s := newTestCommandServer(t)
+	update := func(tl uint32, end, lsn string) {
+		t.Helper()
+		info := sidekickgrpc.LogInfo{Type: "success", LogLimit: 5, StartTime: "t0", EndTime: end, Component: ComponentWal, Lsn: lsn, Timeline: tl}
+		if err := s.UpdateSnapshot(context.TODO(), testSnapshot, testNamespace, info); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+	}
+	check := func(tl, end, lsn string) {
+		t.Helper()
+		snap := getTestSnapshot(t, s)
+		ls := snap.Status.Components[ComponentWal].LogStats
+		if ls == nil || ls.End == nil || ls.Lsn == nil || *ls.End != end || *ls.Lsn != lsn {
+			t.Fatalf("want end=%s lsn=%s, got %+v", end, lsn, ls)
+		}
+		if got := snap.Annotations[AnnotationWalTimeline]; got != tl {
+			t.Fatalf("want timeline %q, got %q", tl, got)
+		}
+	}
+
+	// recorded by an older server or client: no timeline
+	update(0, "t1", "0/117A6ED8")
+	check("", "t1", "0/117A6ED8")
+	// a lossy failover: timeline 2 starts below what timeline 1 archived
+	update(2, "t2", "0/10000060")
+	check("2", "t2", "0/10000060")
+	// the cut-off old primary keeps pushing its abandoned timeline
+	update(1, "t3", "0/12B0C2F0")
+	check("2", "t2", "0/10000060")
+	// a reordered report on the same timeline is ignored
+	update(2, "t3", "0/F000000")
+	check("2", "t2", "0/10000060")
+	update(2, "t4", "0/10000100")
+	check("2", "t4", "0/10000100")
+	// a report without a timeline is compared by LSN only
+	update(0, "t5", "0/10000200")
+	check("2", "t5", "0/10000200")
+	update(3, "t6", "0/10000180")
+	check("3", "t6", "0/10000180")
+}
+
+func TestWalPositionAdvances(t *testing.T) {
+	lsn := func(v string) *string { return &v }
+	cases := []struct {
+		name   string
+		cur    walPosition
+		nextTL uint32
+		next   string
+		want   bool
+	}{
+		{"nothing recorded", walPosition{}, 1, "0/1", true},
+		{"bad lsn", walPosition{}, 1, "x", false},
+		{"later timeline lower lsn", walPosition{1, lsn("0/20")}, 2, "0/10", true},
+		{"earlier timeline higher lsn", walPosition{2, lsn("0/10")}, 1, "0/20", false},
+		{"same timeline lower lsn", walPosition{2, lsn("0/10")}, 2, "0/F", false},
+		{"same timeline equal lsn", walPosition{2, lsn("0/10")}, 2, "0/10", true},
+		{"unknown recorded is timeline 1", walPosition{0, lsn("0/20")}, 1, "0/10", false},
+		{"unknown recorded, later timeline", walPosition{0, lsn("0/20")}, 2, "0/10", true},
+		{"unknown next compares lsn", walPosition{3, lsn("0/20")}, 0, "0/10", false},
+	}
+	for _, c := range cases {
+		if got := walPositionAdvances(c.cur, c.nextTL, c.next); got != c.want {
+			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+}
