@@ -30,6 +30,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -72,13 +73,19 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 				klog.Errorf("GRPC Server failed: %v", err)
 			}
 		}()
-
-		// Expose the gRPC server on the kubeslice slice so wal-g sidecars in
-		// remote clusters can reach it.
-		if err := r.ensureServiceExport(ctx, &sidekick); err != nil {
-			klog.Errorf("failed to ensure ServiceExport for gRPC server: %v", err)
-		}
 	})
+
+	// Only a sidekick with a wal-g container reports to the gRPC server. Others,
+	// such as a WAL restorer, run without any of the gRPC wiring.
+	reportsSnapshot := getSidekickContainer(&sidekick) != nil
+	if reportsSnapshot {
+		// Expose the gRPC server on the kubeslice slice so wal-g sidecars in
+		// remote clusters can reach it. Ensured on every reconcile: the slice name
+		// comes from this sidekick, and a failure must be retried.
+		if err := r.ensureServiceExport(ctx, &sidekick); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to ensure ServiceExport for gRPC server: %w", err)
+		}
+	}
 
 	err := r.handleDistributedSidekickFinalizer(ctx, &sidekick)
 	if err != nil {
@@ -219,20 +226,20 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 	//     archiver may update with the snapshot key, so the archiver can only ever
 	//     update that Snapshot (it cannot read or forge the grant).
 	// Both values are stable across reconciles, so the pod spec does not drift.
-	signingKey, snapshotKey, err := r.ensureGRPCKeys(ctx, &sidekick)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if err = r.setSigningKey(&sidekick, signingKey); err != nil {
-		return ctrl.Result{}, err
-	}
-	if err = r.setSnapshotGrant(&sidekick, snapshotKey); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	err = r.setGRPCAddress(&sidekick)
-	if err != nil {
-		return ctrl.Result{}, err
+	if reportsSnapshot {
+		signingKey, snapshotKey, err := r.ensureGRPCKeys(ctx, &sidekick)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if err = r.setSigningKey(&sidekick, signingKey); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err = r.setSnapshotGrant(&sidekick, snapshotKey); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err = r.setGRPCAddress(&sidekick); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	pod := corev1.Pod{
@@ -744,11 +751,19 @@ func (r *SidekickReconciler) getDistributedSidekickPhase(sidekick *appsv1alpha1.
 // isDistributedSidekickPodRunning reports whether the ManifestWork feedback
 // shows the sidekick pod in Running phase. Container-level state is not
 // available via ManifestWork feedback, so pod phase is the only signal.
+//
+// The feedback keeps the last values it read: when the pod is deleted on the
+// member cluster, PodPhase still says Running until the work agent recreates
+// the pod on its next resync, minutes later. The manifest's Available
+// condition goes False as soon as the pod is gone, so it is checked first.
 func isDistributedSidekickPodRunning(mw *apiworkv1.ManifestWork) bool {
 	if mw == nil || mw.DeletionTimestamp != nil {
 		return false
 	}
 	for _, manifestStatus := range mw.Status.ResourceStatus.Manifests {
+		if apimeta.IsStatusConditionFalse(manifestStatus.Conditions, apiworkv1.ManifestAvailable) {
+			return false
+		}
 		for _, value := range manifestStatus.StatusFeedbacks.Values {
 			if value.Name == "PodPhase" && value.Value.String != nil {
 				return *value.Value.String == string(corev1.PodRunning)
@@ -874,18 +889,25 @@ func getDistributedContainerRestartCounts(mw *apiworkv1.ManifestWork) int32 {
 
 	for _, value := range feedback.Values {
 		switch value.Name {
-		case "ContainerRestartCount":
-			if value.Value.JsonRaw != nil {
-				restartCounter += extractRestartCountFromJSONRaw(value.Value.JsonRaw)
-			}
-		case "InitContainerRestartCount":
-			if value.Value.JsonRaw != nil {
-				restartCounter += extractRestartCountFromJSONRaw(value.Value.JsonRaw)
-			}
+		case "ContainerRestartCount", "InitContainerRestartCount":
+			restartCounter += extractRestartCount(value.Value)
 		}
 	}
 
 	return restartCounter
+}
+
+// extractRestartCount reads a restart count from status feedback. The work
+// agent returns a single match of the [*] JSONPath as an Integer, and
+// several matches as a JSON array.
+func extractRestartCount(value apiworkv1.FieldValue) int32 {
+	switch {
+	case value.Integer != nil:
+		return int32(*value.Integer)
+	case value.JsonRaw != nil:
+		return extractRestartCountFromJSONRaw(value.JsonRaw)
+	}
+	return 0
 }
 
 func extractRestartCountFromJSONRaw(value *string) int32 {
