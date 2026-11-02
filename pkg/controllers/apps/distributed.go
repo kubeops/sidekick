@@ -30,6 +30,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -750,11 +751,19 @@ func (r *SidekickReconciler) getDistributedSidekickPhase(sidekick *appsv1alpha1.
 // isDistributedSidekickPodRunning reports whether the ManifestWork feedback
 // shows the sidekick pod in Running phase. Container-level state is not
 // available via ManifestWork feedback, so pod phase is the only signal.
+//
+// The feedback keeps the last values it read: when the pod is deleted on the
+// member cluster, PodPhase still says Running until the work agent recreates
+// the pod on its next resync, minutes later. The manifest's Available
+// condition goes False as soon as the pod is gone, so it is checked first.
 func isDistributedSidekickPodRunning(mw *apiworkv1.ManifestWork) bool {
 	if mw == nil || mw.DeletionTimestamp != nil {
 		return false
 	}
 	for _, manifestStatus := range mw.Status.ResourceStatus.Manifests {
+		if apimeta.IsStatusConditionFalse(manifestStatus.Conditions, apiworkv1.ManifestAvailable) {
+			return false
+		}
 		for _, value := range manifestStatus.StatusFeedbacks.Values {
 			if value.Name == "PodPhase" && value.Value.String != nil {
 				return *value.Value.String == string(corev1.PodRunning)
