@@ -217,7 +217,35 @@ type Component struct {
 	LogStats *LogStats `json:"logStats,omitempty"`
 
 	// ClickHouseStats specifies the ClickHouse Backup specific information
-	ClickHouseStats *ClickHouseStats `json:"clickHouseStats,omitempty"`
+	ClickHouseStats []ClickHouseStats `json:"clickHouseStats,omitempty"`
+
+	// OracleStats specifies the "OracleBackup" driver specific information
+	// +optional
+	OracleStats *OracleStats `json:"oracleStats,omitempty"`
+
+	// Neo4jStats specifies the Neo4j Admin specific information
+	Neo4jStats []Neo4jStats `json:"neo4jStats,omitempty"`
+
+	// WeaviateStats specifies the "Weaviate" driver specific information
+	// +optional
+	WeaviateStats *WeaviateStats `json:"weaviateStats,omitempty"`
+
+	// MilvusStats specifies the "Milvus" driver specific information
+	// +optional
+	MilvusStats *MilvusStats `json:"milvusStats,omitempty"`
+}
+
+type Neo4jStats struct {
+	File        string `json:"file,omitempty"`
+	Database    string `json:"database,omitempty"`
+	DatabaseID  string `json:"databaseID,omitempty"`
+	Time        string `json:"time,omitempty"`
+	Full        *bool  `json:"full,omitempty"`
+	Compressed  *bool  `json:"compressed,omitempty"`
+	LowestTX    int64  `json:"lowestTX,omitempty"`
+	HighestTX   int64  `json:"highestTX,omitempty"`
+	StoreIDHash string `json:"storeIDHash,omitempty"`
+	Recovered   *bool  `json:"recovered,omitempty"`
 }
 
 type LogStats struct {
@@ -278,6 +306,17 @@ const (
 
 // ResticStats specifies the "Restic" driver specific information
 type ResticStats struct {
+	// Summary specifies the summary of the restic backup
+	// +optional
+	Summary *ResticSummary `json:"summary,omitempty"`
+
+	// Progress specifies the progress of the restic backup
+	// +optional
+	Progress *BackupProgress `json:"progress,omitempty"`
+}
+
+// ResticSummary specifies the summary of the Restic backup
+type ResticSummary struct {
 	// Id represents the restic snapshot id
 	Id string `json:"id,omitempty"`
 
@@ -300,6 +339,37 @@ type ResticStats struct {
 	// EndTime represents the timestamp at which the restic command successfully executed
 	// +optional
 	EndTime *metav1.Time `json:"endTime,omitempty"`
+}
+
+// BackupProgress specifies the progress of the Restic backup
+type BackupProgress struct {
+	// SecondsElapsed represents the seconds elapsed during the backup
+	// +optional
+	SecondsElapsed int64 `json:"secondsElapsed,omitempty"`
+
+	// PercentDone represents the percentage of the backup that has been completed
+	// +optional
+	PercentDone string `json:"percentDone,omitempty"`
+
+	// TotalFiles represents the total number of files to backup
+	// +optional
+	TotalFiles int64 `json:"totalFiles,omitempty"`
+
+	// FilesDone represents the number of files done
+	// +optional
+	FilesDone int64 `json:"filesDone,omitempty"`
+
+	// BackupDone represents the amount of data that has been backup so far
+	// +optional
+	BackupDone string `json:"backupDone,omitempty"`
+
+	// Total represents the total amount of data that needs to be transferred during the backup
+	// +optional
+	Total string `json:"total,omitempty"`
+
+	// Speed represents the transfer speed during the backup
+	// +optional
+	Speed string `json:"speed,omitempty"`
 }
 
 // VolumeSnapshotterStats specifies the "VolumeSnapshotter" driver specific information
@@ -362,6 +432,12 @@ type SolrStats struct {
 	// BackupId represents the ID of the backup
 	BackupId int `json:"backupId,omitempty"`
 
+	// BackupName is the name Solr filed this backup under, which is also the
+	// directory it occupies inside the repository. Restore needs it to locate the
+	// data, and retention needs it to delete only this snapshot's objects, so it
+	// is recorded rather than reconstructed from a naming convention.
+	BackupName string `json:"backupName,omitempty"`
+
 	// collection represents the collection for which backup has been taken
 	Collection string `json:"collection,omitempty"`
 
@@ -388,11 +464,89 @@ type ClickHouseStats struct {
 	// StatusType represents the status of Backup. This can be "IN_PROGRESS","SUCCESS","FAILED" or "UNKNOWN"
 	StatusType string `json:"status,omitempty"`
 
+	// host represents the host for which backup has been taken
+	Host string `json:"host,omitempty"`
+
 	// Starting time of the backup
 	StartTime *metav1.Time `json:"startTime,omitempty"`
 
 	// Finishing time of the backup
 	FinishTime *metav1.Time `json:"finishTime,omitempty"`
+}
+
+// OracleStats specifies the information specific to the "OracleBackup" driver.
+type OracleStats struct {
+	// Tag represents the RMAN tag shared by every backup piece of this session
+	Tag string `json:"tag,omitempty"`
+
+	// DBID represents the identifier of the database the backup was taken from
+	DBID string `json:"dbid,omitempty"`
+
+	// PieceCount represents the number of available backup pieces carrying the tag
+	PieceCount int `json:"pieceCount,omitempty"`
+
+	// UntilSCN represents the recovery boundary of this backup
+	UntilSCN string `json:"untilSCN,omitempty"`
+
+	// Incarnation represents the database incarnation the backup was taken in
+	Incarnation string `json:"incarnation,omitempty"`
+}
+
+// WeaviateStats specifies the information specific to the "Weaviate" driver.
+type WeaviateStats struct {
+	// Id represents the Backup ID.
+	Id string `json:"id,omitempty"`
+
+	// StartTime of backup
+	// +optional
+	StartTime *metav1.Time `json:"startTime,omitempty"`
+
+	// StopTime represents the Weaviate backup stop time.
+	// +optional
+	StopTime *metav1.Time `json:"stopTime,omitempty"`
+}
+
+// MilvusStats specifies the information specific to the "Milvus" driver.
+type MilvusStats struct {
+	// Id represents the Backup ID.
+	Id string `json:"id,omitempty"`
+
+	// StartTime of backup
+	// +optional
+	StartTime *metav1.Time `json:"startTime,omitempty"`
+
+	// StopTime represents the Milvus backup stop time.
+	// +optional
+	StopTime *metav1.Time `json:"stopTime,omitempty"`
+
+	// MetaRevision is the etcd revision at which the metadata was captured.
+	// +optional
+	MetaRevision int64 `json:"metaRevision,omitempty"`
+
+	// TSO is the Milvus timestamp high-water mark at MetaRevision.
+	// +optional
+	TSO uint64 `json:"tso,omitempty"`
+
+	// FenceTime is the wall-clock time of the metadata capture. It is the point
+	// in time this full backup restores to, and the base of point-in-time recovery.
+	// +optional
+	FenceTime *metav1.Time `json:"fenceTime,omitempty"`
+
+	// Quiesce records how the Milvus was quiesced: DenyWrites, Flush or None.
+	// +optional
+	Quiesce string `json:"quiesce,omitempty"`
+
+	// WoodpeckerMetaVersion identifies the Woodpecker metadata schema of the capture.
+	// +optional
+	WoodpeckerMetaVersion string `json:"woodpeckerMetaVersion,omitempty"`
+
+	// ObjectCount is the number of object versions archived by this backup.
+	// +optional
+	ObjectCount int64 `json:"objectCount,omitempty"`
+
+	// BytesCopied is the number of object bytes archived by this backup.
+	// +optional
+	BytesCopied int64 `json:"bytesCopied,omitempty"`
 }
 
 const (
