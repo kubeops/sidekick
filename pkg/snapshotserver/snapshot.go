@@ -26,7 +26,7 @@ import (
 	sidekickgrpc "kubeops.dev/sidekick/grpc"
 
 	"gomodules.xyz/pointer"
-	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	kmc "kmodules.xyz/client-go/client"
 	storageapi "kubestash.dev/apimachinery/apis/storage/v1alpha1"
@@ -37,8 +37,14 @@ const (
 	ComponentLog = "log"
 	ComponentWal = "wal"
 
-	// AnnotationWalTimeline records the timeline of the wal component's
-	// LogStats.Lsn, which KubeStash's LogStats has no field for.
+	// AnnotationWalPosition records the wal component's position as one
+	// "<timeline>:<lsn>" value (timeline 0 when unknown). It is written in a
+	// single patch, so the timeline and the LSN always belong together; read
+	// the position from here, not by pairing AnnotationWalTimeline with the
+	// status Lsn, which are written separately.
+	AnnotationWalPosition = "sidekick.kubeops.dev/wal-position"
+	// AnnotationWalTimeline records the timeline of the recorded wal position
+	// alone, for readers that predate AnnotationWalPosition.
 	AnnotationWalTimeline = "sidekick.kubeops.dev/wal-timeline"
 
 	// maxLogLimit caps the caller-supplied history limit. Without an upper bound
@@ -134,6 +140,21 @@ func (s *CommandServer) UpdateSnapshot(ctx context.Context, name, namespace stri
 		return err
 	}
 
+	// Reports for one Snapshot are handled one at a time: during a failover
+	// the old and the new archiver report concurrently, and each report is a
+	// read-check-write of the recorded WAL position.
+	unlock := s.snapshotLocks.lock(namespace + "/" + name)
+	defer unlock()
+
+	if componentName == ComponentWal {
+		// The writes carry the resourceVersion they were computed from, so a
+		// concurrent writer elsewhere (another server replica) makes them
+		// conflict; the report is then re-evaluated against the fresh Snapshot.
+		return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			return s.updateWalComponent(ctx, name, namespace, info)
+		})
+	}
+
 	snapshot, err := s.InitSnapshotComponentsStatus(ctx, name, namespace, componentName)
 	if err != nil {
 		klog.Errorf("[grpc] failed to initialize snapshot components status: %v", err)
@@ -144,77 +165,179 @@ func (s *CommandServer) UpdateSnapshot(ctx context.Context, name, namespace stri
 	if component.LogStats == nil {
 		component.LogStats = &storageapi.LogStats{}
 	}
+	if component.LogStats.Start == nil {
+		component.LogStats.Start = pointer.StringP(info.StartTime)
+	}
+	component.LogStats.End = pointer.StringP(info.EndTime)
+	if info.Lsn != "" {
+		component.LogStats.Lsn = pointer.StringP(info.Lsn)
+	}
+	appendLogHistory(component.LogStats, info)
+	snapshot.Status.Components[componentName] = component
+	return s.updateSnapshotStatus(ctx, snapshot)
+}
 
-	var recordTimeline uint32
+// appendLogHistory counts the report and appends it to the success or failure
+// history.
+func appendLogHistory(ls *storageapi.LogStats, info sidekickgrpc.LogInfo) {
 	newLog := storageapi.Log{
 		Start: pointer.StringP(info.StartTime),
 		End:   pointer.StringP(info.EndTime),
 	}
-	if componentName == ComponentWal {
-		// Start, End and Lsn are the archived range PITR restores within, so
-		// they come only from a successful update and point at WAL that is
-		// already in the bucket; End and Lsn never move backward.
+	if info.Type == "success" {
+		ls.TotalSucceededCount += 1
+		ls.LastSucceededStats = append(ls.LastSucceededStats, newLog)
+		trimLogHistory(&ls.LastSucceededStats, info.LogLimit)
+	} else {
+		newLog.Error = info.Log
+		ls.TotalFailedCount += 1
+		ls.LastFailedStats = append(ls.LastFailedStats, newLog)
+		trimLogHistory(&ls.LastFailedStats, info.LogLimit)
+	}
+}
+
+// updateWalComponent records one wal report. It is called again on a
+// conflict, and is idempotent for a report whose position it already wrote.
+//
+// The WAL position is a (timeline, LSN) pair. The status subresource cannot
+// carry the timeline and a status write cannot change annotations, so the pair
+// is recorded as one value, AnnotationWalPosition, in a single metadata patch.
+// It is the position every check compares against, and readers that need the
+// timeline must read the pair from it, never the timeline from one place and
+// the LSN from another. The patch is written first; the status (Lsn, End and
+// the counters) follows. If the status write fails, the status only lags the
+// pair, which understates what is archived; the next report brings it up.
+//
+// Both writes carry the resourceVersion they were computed from. A conflict
+// is returned to the caller's retry, which re-reads the Snapshot and decides
+// again, so a report never overwrites a position it did not compare against.
+func (s *CommandServer) updateWalComponent(ctx context.Context, name, namespace string, info sidekickgrpc.LogInfo) error {
+	snapshot := &storageapi.Snapshot{}
+	if err := s.KBClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, snapshot); err != nil {
+		return err
+	}
+
+	advanced := false
+	if info.Type == "success" {
+		current := storedWalPosition(snapshot)
+		if walPositionAdvances(current, info.Timeline, info.Lsn) {
+			advanced = true
+			// A report without a timeline (an older client) keeps the
+			// recorded one: it was compared by LSN only.
+			timeline := info.Timeline
+			if timeline == 0 {
+				timeline = current.timeline
+			}
+			if err := s.recordWalPosition(ctx, snapshot, timeline, info.Lsn); err != nil {
+				return err
+			}
+		}
+	}
+
+	base := snapshot.DeepCopy()
+	if snapshot.Status.Components == nil {
+		snapshot.Status.Components = make(map[string]storageapi.Component)
+	}
+	component := snapshot.Status.Components[ComponentWal]
+	component.Phase = storageapi.ComponentPhaseRunning
+	if component.LogStats == nil {
+		component.LogStats = &storageapi.LogStats{}
+	}
+	// Start, End and Lsn are the archived range PITR restores within, so they
+	// come only from a successful update and point at WAL that is already in
+	// the bucket; End and Lsn follow the recorded position and never move
+	// backward.
+	if info.Type == "success" {
 		commitTime := info.CommitTime
 		if commitTime == "" {
 			commitTime = info.EndTime
 		}
-		if info.Type == "success" {
-			if component.LogStats.Start == nil {
-				component.LogStats.Start = pointer.StringP(commitTime)
-			}
-			current := walPosition{timeline: storedWalTimeline(snapshot), lsn: component.LogStats.Lsn}
-			if walPositionAdvances(current, info.Timeline, info.Lsn) {
-				component.LogStats.End = pointer.StringP(commitTime)
-				component.LogStats.Lsn = pointer.StringP(info.Lsn)
-				recordTimeline = info.Timeline
-			}
-		}
-	} else {
 		if component.LogStats.Start == nil {
-			component.LogStats.Start = pointer.StringP(info.StartTime)
+			component.LogStats.Start = pointer.StringP(commitTime)
 		}
-		component.LogStats.End = pointer.StringP(info.EndTime)
-		if info.Lsn != "" {
+		if advanced {
+			component.LogStats.End = pointer.StringP(commitTime)
 			component.LogStats.Lsn = pointer.StringP(info.Lsn)
 		}
 	}
-	if info.Type == "success" {
-		component.LogStats.TotalSucceededCount += 1
-		component.LogStats.LastSucceededStats = append(component.LogStats.LastSucceededStats, newLog)
-		trimLogHistory(&component.LogStats.LastSucceededStats, info.LogLimit)
-	} else {
-		newLog.Error = info.Log
-		component.LogStats.TotalFailedCount += 1
-		component.LogStats.LastFailedStats = append(component.LogStats.LastFailedStats, newLog)
-		trimLogHistory(&component.LogStats.LastFailedStats, info.LogLimit)
+	appendLogHistory(component.LogStats, info)
+	snapshot.Status.Components[ComponentWal] = component
+	return s.KBClient.Status().Patch(ctx, snapshot, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+}
+
+// recordWalPosition writes the WAL position pair, and the timeline alone for
+// readers of AnnotationWalTimeline, in one metadata patch that fails with a
+// conflict if the Snapshot changed since it was read. On success snapshot
+// holds the patched object.
+func (s *CommandServer) recordWalPosition(ctx context.Context, snapshot *storageapi.Snapshot, timeline uint32, lsn string) error {
+	if snapshot.Annotations[AnnotationWalPosition] == formatWalPosition(timeline, lsn) &&
+		(timeline == 0 || snapshot.Annotations[AnnotationWalTimeline] == strconv.FormatUint(uint64(timeline), 10)) {
+		return nil
 	}
-	snapshot.Status.Components[componentName] = component
-	if err := s.updateSnapshotStatus(ctx, snapshot); err != nil {
-		return err
+	base := snapshot.DeepCopy()
+	annotations := snapshot.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
 	}
-	// The timeline goes after the status: if this patch fails, the stored
-	// timeline is older than Lsn's, and the next report on the new timeline
-	// still wins. Written first, a failed status patch would leave the new
-	// timeline next to the old timeline's higher Lsn and block every report.
-	if recordTimeline != 0 && storedWalTimeline(snapshot) != recordTimeline {
-		return s.recordWalTimeline(ctx, snapshot, recordTimeline)
+	annotations[AnnotationWalPosition] = formatWalPosition(timeline, lsn)
+	if timeline != 0 {
+		annotations[AnnotationWalTimeline] = strconv.FormatUint(uint64(timeline), 10)
+	}
+	snapshot.SetAnnotations(annotations)
+	if err := s.KBClient.Patch(ctx, snapshot, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return fmt.Errorf("failed to record wal position %s on snapshot %s/%s: %w", formatWalPosition(timeline, lsn), snapshot.Namespace, snapshot.Name, err)
 	}
 	return nil
 }
 
-func (s *CommandServer) recordWalTimeline(ctx context.Context, snapshot *storageapi.Snapshot, timeline uint32) error {
-	patch, err := json.Marshal(map[string]any{
-		"metadata": map[string]any{
-			"annotations": map[string]string{AnnotationWalTimeline: strconv.FormatUint(uint64(timeline), 10)},
-		},
-	})
+// formatWalPosition encodes a WAL position as "<timeline>:<lsn>". Timeline 0
+// means unknown.
+func formatWalPosition(timeline uint32, lsn string) string {
+	return strconv.FormatUint(uint64(timeline), 10) + ":" + lsn
+}
+
+// parseWalPosition decodes formatWalPosition.
+func parseWalPosition(v string) (walPosition, error) {
+	tl, lsn, ok := strings.Cut(v, ":")
+	if !ok {
+		return walPosition{}, fmt.Errorf("invalid wal position %q", v)
+	}
+	t, err := strconv.ParseUint(tl, 10, 32)
 	if err != nil {
-		return err
+		return walPosition{}, fmt.Errorf("invalid wal position %q: %w", v, err)
 	}
-	if err := s.KBClient.Patch(ctx, snapshot, client.RawPatch(types.MergePatchType, patch)); err != nil {
-		return fmt.Errorf("failed to record wal timeline %d on snapshot %s/%s: %w", timeline, snapshot.Namespace, snapshot.Name, err)
+	if _, err := parseLSN(lsn); err != nil {
+		return walPosition{}, fmt.Errorf("invalid wal position %q: %w", v, err)
 	}
-	return nil
+	return walPosition{timeline: uint32(t), lsn: &lsn}, nil
+}
+
+// walPositionAnnotation returns the position recorded in AnnotationWalPosition.
+func walPositionAnnotation(snapshot *storageapi.Snapshot) (walPosition, bool) {
+	v, ok := snapshot.Annotations[AnnotationWalPosition]
+	if !ok {
+		return walPosition{}, false
+	}
+	pos, err := parseWalPosition(v)
+	if err != nil {
+		klog.Warningf("[grpc] ignoring %s on snapshot %s/%s: %v", AnnotationWalPosition, snapshot.Namespace, snapshot.Name, err)
+		return walPosition{}, false
+	}
+	return pos, true
+}
+
+// storedWalPosition returns the recorded WAL position: the pair in
+// AnnotationWalPosition, or, for a Snapshot written by an older server, the
+// status Lsn with the AnnotationWalTimeline timeline.
+func storedWalPosition(snapshot *storageapi.Snapshot) walPosition {
+	if pos, ok := walPositionAnnotation(snapshot); ok {
+		return pos
+	}
+	pos := walPosition{timeline: storedWalTimeline(snapshot)}
+	if c, ok := snapshot.Status.Components[ComponentWal]; ok && c.LogStats != nil {
+		pos.lsn = c.LogStats.Lsn
+	}
+	return pos
 }
 
 // storedWalTimeline returns the timeline recorded with the wal component's Lsn,
