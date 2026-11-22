@@ -46,6 +46,15 @@ const (
 	// AnnotationWalTimeline records the timeline of the recorded wal position
 	// alone, for readers that predate AnnotationWalPosition.
 	AnnotationWalTimeline = "sidekick.kubeops.dev/wal-timeline"
+	// AnnotationWalGap records the WAL archive gap the archiver cannot close
+	// (JSON written by the archiver: timeline, first, last, count, since). It is
+	// set and removed by LogTypeWalGap reports on the wal component; the
+	// Postgres operator turns it into a status condition.
+	AnnotationWalGap = "sidekick.kubeops.dev/wal-gap"
+	// LogTypeWalGap is the LogInfo.Type of a gap report: Log carries the gap,
+	// an empty Log clears it. It is not a push result, so it touches neither
+	// the recorded position nor the success/failure history.
+	LogTypeWalGap = "wal-gap"
 
 	// maxLogLimit caps the caller-supplied history limit. Without an upper bound
 	// a hostile caller could set a huge limit so trimming never fires and the
@@ -217,6 +226,10 @@ func (s *CommandServer) updateWalComponent(ctx context.Context, name, namespace 
 		return err
 	}
 
+	if info.Type == LogTypeWalGap {
+		return s.recordWalGap(ctx, snapshot, info.Log)
+	}
+
 	advanced := false
 	if info.Type == "success" {
 		current := storedWalPosition(snapshot)
@@ -286,6 +299,30 @@ func (s *CommandServer) recordWalPosition(ctx context.Context, snapshot *storage
 	snapshot.SetAnnotations(annotations)
 	if err := s.KBClient.Patch(ctx, snapshot, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 		return fmt.Errorf("failed to record wal position %s on snapshot %s/%s: %w", formatWalPosition(timeline, lsn), snapshot.Namespace, snapshot.Name, err)
+	}
+	return nil
+}
+
+// recordWalGap sets AnnotationWalGap to gap, or removes it when gap is empty,
+// in one metadata patch with the same optimistic lock as recordWalPosition.
+func (s *CommandServer) recordWalGap(ctx context.Context, snapshot *storageapi.Snapshot, gap string) error {
+	current, exists := snapshot.Annotations[AnnotationWalGap]
+	if (gap == "" && !exists) || (gap != "" && current == gap) {
+		return nil
+	}
+	base := snapshot.DeepCopy()
+	annotations := snapshot.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	if gap == "" {
+		delete(annotations, AnnotationWalGap)
+	} else {
+		annotations[AnnotationWalGap] = gap
+	}
+	snapshot.SetAnnotations(annotations)
+	if err := s.KBClient.Patch(ctx, snapshot, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return fmt.Errorf("failed to record the wal gap on snapshot %s/%s: %w", snapshot.Namespace, snapshot.Name, err)
 	}
 	return nil
 }

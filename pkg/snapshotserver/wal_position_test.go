@@ -197,3 +197,40 @@ func TestKeyedMutex(t *testing.T) {
 		t.Fatalf("locks left: %v", k.locks)
 	}
 }
+
+// A wal-gap report sets, replaces and clears the gap annotation and never
+// touches the recorded position or the push history.
+func TestUpdateSnapshot_WalGapAnnotation(t *testing.T) {
+	srv := newTestCommandServer(t)
+	ctx := context.TODO()
+	if err := srv.UpdateSnapshot(ctx, testSnapshot, testNamespace, walReport(6, "a0", "0/9000000")); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	gap := func(v string) sidekickgrpc.LogInfo {
+		return sidekickgrpc.LogInfo{Type: LogTypeWalGap, Log: v, StartTime: "t1", EndTime: "t1", Component: ComponentWal}
+	}
+	for _, v := range []string{`{"first":"a"}`, `{"first":"b"}`} {
+		if err := srv.UpdateSnapshot(ctx, testSnapshot, testNamespace, gap(v)); err != nil {
+			t.Fatalf("gap %s: %v", v, err)
+		}
+		snap := getTestSnapshot(t, srv)
+		if got := snap.Annotations[AnnotationWalGap]; got != v {
+			t.Fatalf("gap annotation %q, want %q", got, v)
+		}
+		checkWalPosition(t, snap, 6, "a0", "0/9000000")
+		ls := snap.Status.Components[ComponentWal].LogStats
+		if ls.TotalSucceededCount != 1 || ls.TotalFailedCount != 0 {
+			t.Fatalf("history changed by a gap report: %+v", ls)
+		}
+	}
+	if err := srv.UpdateSnapshot(ctx, testSnapshot, testNamespace, gap("")); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if _, ok := getTestSnapshot(t, srv).Annotations[AnnotationWalGap]; ok {
+		t.Fatal("gap annotation not removed")
+	}
+	// Clearing again is a no-op.
+	if err := srv.UpdateSnapshot(ctx, testSnapshot, testNamespace, gap("")); err != nil {
+		t.Fatalf("clear again: %v", err)
+	}
+}
