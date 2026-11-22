@@ -46,6 +46,10 @@ spec:
                         - Solr
                         - Medusa
                         - ClickHouseBackup
+                        - Neo4jAdmin
+                        - Weaviate
+                        - Milvus
+                        - OracleBackup
                       - enum:
                         - Restic
                         - WalG
@@ -53,6 +57,10 @@ spec:
                         - VolumeSnapshotter
                         - Solr
                         - ClickHouseBackup
+                        - Neo4jAdmin
+                        - Weaviate
+                        - Milvus
+                        - OracleBackup
                       type: string
                     executor:
                       enum:
@@ -1072,6 +1080,10 @@ spec:
                         - Solr
                         - Medusa
                         - ClickHouseBackup
+                        - Neo4jAdmin
+                        - Weaviate
+                        - Milvus
+                        - OracleBackup
                       - enum:
                         - Restic
                         - WalG
@@ -1079,6 +1091,10 @@ spec:
                         - VolumeSnapshotter
                         - Solr
                         - ClickHouseBackup
+                        - Neo4jAdmin
+                        - Weaviate
+                        - Milvus
+                        - OracleBackup
                       type: string
                     executor:
                       enum:
