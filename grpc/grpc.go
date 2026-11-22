@@ -54,4 +54,21 @@ type LogInfo struct {
 	LogLimit  int    `json:"logLimit"`
 	StartTime string `json:"startTime"`
 	EndTime   string `json:"endTime"`
+	// Component is the Snapshot component the update is recorded in: "log"
+	// (the default when empty, MariaDB binlogs) or "wal" (Postgres WAL).
+	// Omitted when empty so existing clients bind to the same payload bytes.
+	Component string `json:"component,omitempty"`
+	// Lsn is the last archived LSN, recorded in the component's LogStats.Lsn.
+	Lsn string `json:"lsn,omitempty"`
+	// CommitTime is the time of the last archived commit, recorded in the
+	// component's LogStats.End (the PITR bound). When it is set, StartTime and
+	// EndTime are the wall-clock window of the push, as in the history entry.
+	// When it is empty, EndTime is used, so older clients keep working.
+	CommitTime string `json:"commitTime,omitempty"`
+	// Timeline is the Postgres timeline of the WAL at Lsn. A failover starts a
+	// new timeline at the point the promoted standby had replayed to, which can
+	// be below what the old primary had archived, so positions are compared by
+	// timeline first and by Lsn only within one timeline. Zero means unknown
+	// (an older client), and only Lsn is compared.
+	Timeline uint32 `json:"timeline,omitempty"`
 }
