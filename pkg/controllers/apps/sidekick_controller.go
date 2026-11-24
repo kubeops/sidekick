@@ -122,7 +122,6 @@ func (r *SidekickReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		} else if err != nil {
 			// No leader and no pod: wait for a leader to appear.
 			return ctrl.Result{
-				Requeue:      true,
 				RequeueAfter: time.Second * 10,
 			}, client.IgnoreNotFound(err)
 		}

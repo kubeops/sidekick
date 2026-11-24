@@ -81,6 +81,9 @@ type CommandServer struct {
 
 	// replay rejects tokens whose nonce has already been seen.
 	replay *replayCache
+
+	// snapshotLocks serializes the updates of one Snapshot.
+	snapshotLocks keyedMutex
 }
 
 // ExecuteCommand authenticates the request token and, on success, dispatches the
