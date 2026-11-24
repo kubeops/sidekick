@@ -135,7 +135,6 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 			return ctrl.Result{}, nil
 		} else if err != nil {
 			return ctrl.Result{
-				Requeue:      true,
 				RequeueAfter: time.Second * 10,
 			}, client.IgnoreNotFound(err)
 		}
@@ -170,7 +169,7 @@ func (r *SidekickReconciler) ReconcileDistributedSidekick(ctx context.Context, r
 		nodeName := pod.Spec.NodeName
 		if nodeName == "" || podPhase == "" {
 			klog.V(5).Infof("node name or pod phase is empty for manifestwork %s, requeuing...", mw.Name)
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 		expectedHash := meta.GenerationHash(&sidekick)
 		actualHash := pod.Annotations[keyHash]
